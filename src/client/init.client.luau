@@ -23,6 +23,9 @@ local unitActionWindow: Frame? = nil
 local unitActionTitle: TextLabel? = nil
 local unitActionStatus: TextLabel? = nil
 local unitActionList: Frame? = nil
+local cityNameGui: ScreenGui? = nil
+local cityNameWindow: Frame? = nil
+local cityNameInput: TextBox? = nil
 
 local highlightFolder = Instance.new("Folder")
 highlightFolder.Name = "MovementHighlights"
@@ -463,6 +466,161 @@ local function clearActionButtons()
 	end
 end
 
+local function closeCityNameDialog()
+	if cityNameWindow then
+		cityNameWindow.Visible = false
+	end
+end
+
+local function submitCityName()
+	if not selectedUnitId then
+		closeCityNameDialog()
+		return
+	end
+
+	local cityName = "New City"
+	if cityNameInput and cityNameInput.Text ~= "" then
+		cityName = cityNameInput.Text
+	end
+
+	unitActionEvent:FireServer(selectedUnitId, "FoundCity", cityName)
+	closeCityNameDialog()
+	clearHighlights()
+	hideUnitActionWindow()
+	selectedUnitId = nil
+	selectedUnitModel = nil
+end
+
+local function ensureCityNameGui()
+	if cityNameGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "CityNameGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.AnchorPoint = Vector2.new(0.5, 0.5)
+	window.BackgroundColor3 = Color3.fromRGB(28, 31, 36)
+	window.BorderSizePixel = 0
+	window.Position = UDim2.fromScale(0.5, 0.5)
+	window.Size = UDim2.fromOffset(320, 156)
+	window.Visible = false
+	window.Parent = gui
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(232, 220, 170)
+	stroke.Transparency = 0.25
+	stroke.Thickness = 1
+	stroke.Parent = window
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingBottom = UDim.new(0, 14)
+	padding.PaddingLeft = UDim.new(0, 14)
+	padding.PaddingRight = UDim.new(0, 14)
+	padding.PaddingTop = UDim.new(0, 14)
+	padding.Parent = window
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Size = UDim2.new(1, 0, 0, 24)
+	title.Text = "Название города"
+	title.TextColor3 = Color3.fromRGB(255, 247, 214)
+	title.TextSize = 18
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = window
+
+	local input = Instance.new("TextBox")
+	input.Name = "CityNameInput"
+	input.BackgroundColor3 = Color3.fromRGB(45, 51, 60)
+	input.BorderSizePixel = 0
+	input.ClearTextOnFocus = false
+	input.Font = Enum.Font.Gotham
+	input.PlaceholderText = "Введите название"
+	input.Position = UDim2.fromOffset(0, 42)
+	input.Size = UDim2.new(1, 0, 0, 36)
+	input.Text = ""
+	input.TextColor3 = Color3.fromRGB(245, 247, 250)
+	input.TextSize = 14
+	input.Parent = window
+
+	local inputPadding = Instance.new("UIPadding")
+	inputPadding.PaddingLeft = UDim.new(0, 10)
+	inputPadding.PaddingRight = UDim.new(0, 10)
+	inputPadding.Parent = input
+
+	local cancelButton = Instance.new("TextButton")
+	cancelButton.Name = "CancelButton"
+	cancelButton.BackgroundColor3 = Color3.fromRGB(58, 64, 74)
+	cancelButton.BorderSizePixel = 0
+	cancelButton.Font = Enum.Font.GothamSemibold
+	cancelButton.Position = UDim2.new(0, 0, 1, -36)
+	cancelButton.Size = UDim2.new(0.5, -5, 0, 32)
+	cancelButton.Text = "Отмена"
+	cancelButton.TextColor3 = Color3.fromRGB(245, 247, 250)
+	cancelButton.TextSize = 13
+	cancelButton.Parent = window
+
+	local confirmButton = Instance.new("TextButton")
+	confirmButton.Name = "ConfirmButton"
+	confirmButton.BackgroundColor3 = Color3.fromRGB(78, 126, 86)
+	confirmButton.BorderSizePixel = 0
+	confirmButton.Font = Enum.Font.GothamSemibold
+	confirmButton.Position = UDim2.new(0.5, 5, 1, -36)
+	confirmButton.Size = UDim2.new(0.5, -5, 0, 32)
+	confirmButton.Text = "Основать"
+	confirmButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	confirmButton.TextSize = 13
+	confirmButton.Parent = window
+
+	cancelButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+
+	confirmButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+
+	cancelButton.Activated:Connect(function()
+		closeCityNameDialog()
+	end)
+
+	confirmButton.Activated:Connect(submitCityName)
+
+	input.FocusLost:Connect(function(enterPressed)
+		if enterPressed then
+			submitCityName()
+		end
+	end)
+
+	cityNameGui = gui
+	cityNameWindow = window
+	cityNameInput = input
+end
+
+local function showCityNameDialog()
+	ensureCityNameGui()
+	movementMode = false
+	clearMovementHighlights()
+
+	if cityNameInput then
+		cityNameInput.Text = ""
+	end
+
+	if cityNameWindow then
+		cityNameWindow.Visible = true
+	end
+
+	if cityNameInput then
+		cityNameInput:CaptureFocus()
+	end
+end
+
 local function handleUnitAction(actionId: string, actionText: string)
 	if actionId == "Move" then
 		movementMode = true
@@ -473,15 +631,7 @@ local function handleUnitAction(actionId: string, actionText: string)
 	end
 
 	if actionId == "FoundCity" then
-		movementMode = false
-		clearMovementHighlights()
-		if selectedUnitId then
-			unitActionEvent:FireServer(selectedUnitId, actionId)
-		end
-		clearHighlights()
-		hideUnitActionWindow()
-		selectedUnitId = nil
-		selectedUnitModel = nil
+		showCityNameDialog()
 		return
 	end
 
@@ -566,6 +716,7 @@ end
 local function clearSelection()
 	clearHighlights()
 	hideUnitActionWindow()
+	closeCityNameDialog()
 	selectedUnitId = nil
 	selectedUnitModel = nil
 end

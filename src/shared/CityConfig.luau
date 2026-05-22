@@ -16,6 +16,7 @@ CityConfig.Placement = {
 }
 
 CityConfig.Visual = {
+	ModelName = "city1",
 	Color = Color3.fromRGB(214, 174, 82),
 	Material = Enum.Material.Brick,
 }

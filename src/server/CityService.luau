@@ -1,5 +1,6 @@
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
 
 local CityConfig = require(ReplicatedStorage.Shared.CityConfig)
@@ -76,7 +77,68 @@ local function getNextCityName(player: Player): string
 	return string.format("%s City %d", player.Name, nextIndex)
 end
 
-local function createCityVisual(cityName: string, tile: BasePart): Model
+local function getCityName(player: Player, requestedCityName: string?): string
+	if typeof(requestedCityName) == "string" then
+		local trimmed = requestedCityName:gsub("^%s+", ""):gsub("%s+$", "")
+		if trimmed ~= "" then
+			return string.sub(trimmed, 1, 40)
+		end
+	end
+
+	return getNextCityName(player)
+end
+
+local function getFirstBasePart(instance: Instance): BasePart?
+	if instance:IsA("BasePart") then
+		return instance
+	end
+
+	for _, descendant in instance:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			return descendant
+		end
+	end
+
+	return nil
+end
+
+local function addCityNameplate(cityName: string, adornee: BasePart)
+	local existing = adornee:FindFirstChild("CityNameplate")
+	if existing then
+		existing:Destroy()
+	end
+
+	local nameplate = Instance.new("BillboardGui")
+	nameplate.Name = "CityNameplate"
+	nameplate.AlwaysOnTop = true
+	nameplate.MaxDistance = 400
+	nameplate.Size = UDim2.fromOffset(130, 28)
+	nameplate.StudsOffset = Vector3.new(0, 1.9, 0)
+	nameplate.Parent = adornee
+
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.Size = UDim2.fromScale(1, 1)
+	label.Text = cityName
+	label.TextColor3 = Color3.fromRGB(255, 247, 214)
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.3
+	label.Parent = nameplate
+end
+
+local function placeCityModel(model: Model, tile: BasePart)
+	local boundingBoxCFrame, size = model:GetBoundingBox()
+	local tileTopY = tile.Position.Y + tile.Size.Y / 2
+	local position = Vector3.new(tile.Position.X, tileTopY + size.Y / 2 + 0.04, tile.Position.Z)
+	local targetBoundingBoxCFrame = CFrame.new(position)
+	local currentPivot = model:GetPivot()
+	local targetPivot = targetBoundingBoxCFrame * boundingBoxCFrame:Inverse() * currentPivot
+
+	model:PivotTo(targetPivot)
+end
+
+local function createFallbackCityVisual(cityName: string, tile: BasePart): Model
 	local model = Instance.new("Model")
 	model.Name = cityName
 
@@ -102,29 +164,55 @@ local function createCityVisual(cityName: string, tile: BasePart): Model
 	tower.BottomSurface = Enum.SurfaceType.Smooth
 	tower.Parent = model
 
-	local nameplate = Instance.new("BillboardGui")
-	nameplate.Name = "CityNameplate"
-	nameplate.AlwaysOnTop = true
-	nameplate.MaxDistance = 400
-	nameplate.Size = UDim2.fromOffset(130, 28)
-	nameplate.StudsOffset = Vector3.new(0, 1.9, 0)
-	nameplate.Parent = tower
-
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Font = Enum.Font.GothamBold
-	label.Size = UDim2.fromScale(1, 1)
-	label.Text = cityName
-	label.TextColor3 = Color3.fromRGB(255, 247, 214)
-	label.TextScaled = true
-	label.TextStrokeTransparency = 0.3
-	label.Parent = nameplate
+	addCityNameplate(cityName, tower)
 
 	model.PrimaryPart = base
 
 	local tileTopY = tile.Position.Y + tile.Size.Y / 2
 	base.Position = Vector3.new(tile.Position.X, tileTopY + base.Size.Y / 2 + 0.04, tile.Position.Z)
 	tower.Position = Vector3.new(tile.Position.X, base.Position.Y + base.Size.Y / 2 + tower.Size.Y / 2, tile.Position.Z)
+
+	return model
+end
+
+local function createCityVisual(cityName: string, tile: BasePart): Model
+	local storedModel = ServerStorage:FindFirstChild(CityConfig.Visual.ModelName)
+	if not storedModel then
+		return createFallbackCityVisual(cityName, tile)
+	end
+
+	local clone = storedModel:Clone()
+	local model: Model
+
+	if clone:IsA("Model") then
+		model = clone
+	elseif clone:IsA("BasePart") then
+		model = Instance.new("Model")
+		clone.Parent = model
+		model.PrimaryPart = clone
+	else
+		clone:Destroy()
+		return createFallbackCityVisual(cityName, tile)
+	end
+
+	model.Name = cityName
+
+	local primaryPart = model.PrimaryPart or getFirstBasePart(model)
+	if not primaryPart then
+		model:Destroy()
+		return createFallbackCityVisual(cityName, tile)
+	end
+
+	model.PrimaryPart = primaryPart
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+		end
+	end
+
+	addCityNameplate(cityName, primaryPart)
+	placeCityModel(model, tile)
 
 	return model
 end
@@ -170,7 +258,7 @@ function CityService.CanFoundCity(x: number, z: number): (boolean, string?)
 	return true, nil
 end
 
-function CityService.FoundCity(player: Player, x: number, z: number): (Model?, string?)
+function CityService.FoundCity(player: Player, x: number, z: number, requestedCityName: string?): (Model?, string?)
 	local canFound, reason = CityService.CanFoundCity(x, z)
 	if not canFound then
 		return nil, reason
@@ -182,7 +270,7 @@ function CityService.FoundCity(player: Player, x: number, z: number): (Model?, s
 	end
 
 	local cityId = HttpService:GenerateGUID(false)
-	local cityName = getNextCityName(player)
+	local cityName = getCityName(player, requestedCityName)
 	local cityModel = createCityVisual(cityName, tile)
 	setCityAttributes(cityModel, cityId, player, cityName, x, z)
 	cityModel.Parent = getCitiesFolder()

@@ -564,7 +564,7 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 	end)
 end
 
-local function onUnitAction(player: Player, unitId: string, actionId: string)
+local function onUnitAction(player: Player, unitId: string, actionId: string, actionValue: any)
 	if typeof(unitId) ~= "string" or typeof(actionId) ~= "string" then
 		return
 	end
@@ -589,7 +589,8 @@ local function onUnitAction(player: Player, unitId: string, actionId: string)
 			return
 		end
 
-		local cityModel = CityService.FoundCity(player, unitState.GridX, unitState.GridZ)
+		local cityName = typeof(actionValue) == "string" and actionValue or nil
+		local cityModel = CityService.FoundCity(player, unitState.GridX, unitState.GridZ, cityName)
 		if cityModel then
 			removeUnit(unitId, unitState)
 		else
