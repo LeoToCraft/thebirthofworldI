@@ -10,6 +10,9 @@ local CityService = {}
 
 local MAP_FOLDER_NAME = "GeneratedMap"
 local CITIES_FOLDER_NAME = "Cities"
+local REMOTES_FOLDER_NAME = "Remotes"
+local CREATE_COUNTRY_EVENT_NAME = "CreateCountry"
+local COUNTRY_NAME_ATTRIBUTE = "CountryName"
 
 local citiesById = {}
 local cityCountByOwner = {}
@@ -33,6 +36,26 @@ local function getCitiesFolder(): Folder
 	newCitiesFolder.Parent = Workspace
 
 	return newCitiesFolder
+end
+
+local function getOrCreateCreateCountryEvent(): RemoteEvent
+	local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = REMOTES_FOLDER_NAME
+		remotesFolder.Parent = ReplicatedStorage
+	end
+
+	local createCountryEvent = remotesFolder:FindFirstChild(CREATE_COUNTRY_EVENT_NAME)
+	if createCountryEvent and createCountryEvent:IsA("RemoteEvent") then
+		return createCountryEvent
+	end
+
+	local newCreateCountryEvent = Instance.new("RemoteEvent")
+	newCreateCountryEvent.Name = CREATE_COUNTRY_EVENT_NAME
+	newCreateCountryEvent.Parent = remotesFolder
+
+	return newCreateCountryEvent
 end
 
 local function getTile(x: number, z: number): BasePart?
@@ -88,6 +111,21 @@ local function getCityName(player: Player, requestedCityName: string?): string
 	return getNextCityName(player)
 end
 
+local function sanitizeName(name: any, fallback: string, maxLength: number): string
+	if typeof(name) == "string" then
+		local trimmed = name:gsub("^%s+", ""):gsub("%s+$", "")
+		if trimmed ~= "" then
+			return string.sub(trimmed, 1, maxLength)
+		end
+	end
+
+	return fallback
+end
+
+local function getCountryName(player: Player): string
+	return sanitizeName(player:GetAttribute(COUNTRY_NAME_ATTRIBUTE), player.Name, 32)
+end
+
 local function getFirstBasePart(instance: Instance): BasePart?
 	if instance:IsA("BasePart") then
 		return instance
@@ -102,24 +140,50 @@ local function getFirstBasePart(instance: Instance): BasePart?
 	return nil
 end
 
-local function addCityNameplate(cityName: string, adornee: BasePart)
-	local existing = adornee:FindFirstChild("CityNameplate")
+local function addCityNameplate(model: Model, cityName: string, countryName: string, tile: BasePart)
+	local existing = model:FindFirstChild("CityNameAnchor")
 	if existing then
 		existing:Destroy()
 	end
+
+	local tileTopY = tile.Position.Y + tile.Size.Y / 2
+
+	local anchor = Instance.new("Part")
+	anchor.Name = "CityNameAnchor"
+	anchor.Anchored = true
+	anchor.CanCollide = false
+	anchor.CanQuery = false
+	anchor.Transparency = 1
+	anchor.Size = Vector3.new(0.2, 0.2, 0.2)
+	anchor.Position = Vector3.new(tile.Position.X, tileTopY + 2.35, tile.Position.Z)
+	anchor.Parent = model
 
 	local nameplate = Instance.new("BillboardGui")
 	nameplate.Name = "CityNameplate"
 	nameplate.AlwaysOnTop = true
 	nameplate.MaxDistance = 400
-	nameplate.Size = UDim2.fromOffset(130, 28)
-	nameplate.StudsOffset = Vector3.new(0, 1.9, 0)
-	nameplate.Parent = adornee
+	nameplate.Size = UDim2.fromOffset(180, 48)
+	nameplate.StudsOffset = Vector3.new(0, 0, 0)
+	nameplate.Parent = anchor
+
+	local countryLabel = Instance.new("TextLabel")
+	countryLabel.Name = "CountryName"
+	countryLabel.BackgroundTransparency = 1
+	countryLabel.Font = Enum.Font.GothamBold
+	countryLabel.Position = UDim2.fromScale(0, 0)
+	countryLabel.Size = UDim2.new(1, 0, 0.45, 0)
+	countryLabel.Text = countryName
+	countryLabel.TextColor3 = Color3.fromRGB(166, 222, 255)
+	countryLabel.TextScaled = true
+	countryLabel.TextStrokeTransparency = 0.25
+	countryLabel.Parent = nameplate
 
 	local label = Instance.new("TextLabel")
+	label.Name = "CityName"
 	label.BackgroundTransparency = 1
 	label.Font = Enum.Font.GothamBold
-	label.Size = UDim2.fromScale(1, 1)
+	label.Position = UDim2.fromScale(0, 0.43)
+	label.Size = UDim2.new(1, 0, 0.57, 0)
 	label.Text = cityName
 	label.TextColor3 = Color3.fromRGB(255, 247, 214)
 	label.TextScaled = true
@@ -163,8 +227,6 @@ local function createFallbackCityVisual(cityName: string, tile: BasePart): Model
 	tower.TopSurface = Enum.SurfaceType.Smooth
 	tower.BottomSurface = Enum.SurfaceType.Smooth
 	tower.Parent = model
-
-	addCityNameplate(cityName, tower)
 
 	model.PrimaryPart = base
 
@@ -211,16 +273,16 @@ local function createCityVisual(cityName: string, tile: BasePart): Model
 		end
 	end
 
-	addCityNameplate(cityName, primaryPart)
 	placeCityModel(model, tile)
 
 	return model
 end
 
-local function setCityAttributes(model: Model, cityId: string, player: Player, cityName: string, x: number, z: number)
+local function setCityAttributes(model: Model, cityId: string, player: Player, cityName: string, countryName: string, x: number, z: number)
 	model:SetAttribute("CityId", cityId)
 	model:SetAttribute("OwnerUserId", player.UserId)
 	model:SetAttribute("CityName", cityName)
+	model:SetAttribute("CountryName", countryName)
 	model:SetAttribute("GridX", x)
 	model:SetAttribute("GridZ", z)
 	model:SetAttribute("Population", CityConfig.Starting.Population)
@@ -231,10 +293,16 @@ local function setCityAttributes(model: Model, cityId: string, player: Player, c
 		if descendant:IsA("BasePart") then
 			descendant:SetAttribute("CityId", cityId)
 			descendant:SetAttribute("OwnerUserId", player.UserId)
+			descendant:SetAttribute("CountryName", countryName)
 			descendant:SetAttribute("GridX", x)
 			descendant:SetAttribute("GridZ", z)
 		end
 	end
+end
+
+local function onCreateCountry(player: Player, requestedCountryName: string)
+	local countryName = sanitizeName(requestedCountryName, player.Name, 32)
+	player:SetAttribute(COUNTRY_NAME_ATTRIBUTE, countryName)
 end
 
 function CityService.CanFoundCity(x: number, z: number): (boolean, string?)
@@ -271,8 +339,10 @@ function CityService.FoundCity(player: Player, x: number, z: number, requestedCi
 
 	local cityId = HttpService:GenerateGUID(false)
 	local cityName = getCityName(player, requestedCityName)
+	local countryName = getCountryName(player)
 	local cityModel = createCityVisual(cityName, tile)
-	setCityAttributes(cityModel, cityId, player, cityName, x, z)
+	setCityAttributes(cityModel, cityId, player, cityName, countryName, x, z)
+	addCityNameplate(cityModel, cityName, countryName, tile)
 	cityModel.Parent = getCitiesFolder()
 	tile:SetAttribute("HasCity", true)
 	tile:SetAttribute("CityId", cityId)
@@ -280,6 +350,7 @@ function CityService.FoundCity(player: Player, x: number, z: number, requestedCi
 	citiesById[cityId] = {
 		Model = cityModel,
 		OwnerUserId = player.UserId,
+		CountryName = countryName,
 		GridX = x,
 		GridZ = z,
 		Population = CityConfig.Starting.Population,
@@ -292,6 +363,7 @@ end
 
 function CityService.Start()
 	getCitiesFolder()
+	getOrCreateCreateCountryEvent().OnServerEvent:Connect(onCreateCountry)
 end
 
 return CityService

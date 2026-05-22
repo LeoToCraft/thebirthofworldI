@@ -11,6 +11,7 @@ local mouse = localPlayer:GetMouse()
 local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
 local moveUnitEvent = remotesFolder:WaitForChild("MoveUnit") :: RemoteEvent
 local unitActionEvent = remotesFolder:WaitForChild("UnitAction") :: RemoteEvent
+local createCountryEvent = remotesFolder:WaitForChild("CreateCountry") :: RemoteEvent
 
 local selectedUnitId: string? = nil
 local selectedUnitModel: Model? = nil
@@ -26,6 +27,8 @@ local unitActionList: Frame? = nil
 local cityNameGui: ScreenGui? = nil
 local cityNameWindow: Frame? = nil
 local cityNameInput: TextBox? = nil
+local countryMenuGui: ScreenGui? = nil
+local countryNameInput: TextBox? = nil
 
 local highlightFolder = Instance.new("Folder")
 highlightFolder.Name = "MovementHighlights"
@@ -621,6 +624,139 @@ local function showCityNameDialog()
 	end
 end
 
+local function hideCountryMenu()
+	if countryMenuGui then
+		countryMenuGui.Enabled = false
+	end
+end
+
+local function submitCountryName()
+	local countryName = "Моя страна"
+	if countryNameInput and countryNameInput.Text ~= "" then
+		countryName = countryNameInput.Text
+	end
+
+	createCountryEvent:FireServer(countryName)
+	hideCountryMenu()
+end
+
+local function ensureCountryMenuGui()
+	if countryMenuGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "CountryMenuGui"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local backdrop = Instance.new("Frame")
+	backdrop.Name = "Backdrop"
+	backdrop.BackgroundColor3 = Color3.fromRGB(15, 19, 24)
+	backdrop.BackgroundTransparency = 0.08
+	backdrop.BorderSizePixel = 0
+	backdrop.Size = UDim2.fromScale(1, 1)
+	backdrop.Parent = gui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.AnchorPoint = Vector2.new(0.5, 0.5)
+	window.BackgroundColor3 = Color3.fromRGB(28, 31, 36)
+	window.BorderSizePixel = 0
+	window.Position = UDim2.fromScale(0.5, 0.5)
+	window.Size = UDim2.fromOffset(360, 180)
+	window.Parent = backdrop
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(232, 220, 170)
+	stroke.Transparency = 0.2
+	stroke.Thickness = 1
+	stroke.Parent = window
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingBottom = UDim.new(0, 18)
+	padding.PaddingLeft = UDim.new(0, 18)
+	padding.PaddingRight = UDim.new(0, 18)
+	padding.PaddingTop = UDim.new(0, 18)
+	padding.Parent = window
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Size = UDim2.new(1, 0, 0, 28)
+	title.Text = "Создать страну"
+	title.TextColor3 = Color3.fromRGB(255, 247, 214)
+	title.TextSize = 20
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = window
+
+	local input = Instance.new("TextBox")
+	input.Name = "CountryNameInput"
+	input.BackgroundColor3 = Color3.fromRGB(45, 51, 60)
+	input.BorderSizePixel = 0
+	input.ClearTextOnFocus = false
+	input.Font = Enum.Font.Gotham
+	input.PlaceholderText = "Название страны"
+	input.Position = UDim2.fromOffset(0, 48)
+	input.Size = UDim2.new(1, 0, 0, 38)
+	input.Text = ""
+	input.TextColor3 = Color3.fromRGB(245, 247, 250)
+	input.TextSize = 15
+	input.Parent = window
+
+	local inputPadding = Instance.new("UIPadding")
+	inputPadding.PaddingLeft = UDim.new(0, 10)
+	inputPadding.PaddingRight = UDim.new(0, 10)
+	inputPadding.Parent = input
+
+	local button = Instance.new("TextButton")
+	button.Name = "CreateButton"
+	button.BackgroundColor3 = Color3.fromRGB(78, 126, 86)
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamSemibold
+	button.Position = UDim2.new(0, 0, 1, -38)
+	button.Size = UDim2.new(1, 0, 0, 36)
+	button.Text = "Создать"
+	button.TextColor3 = Color3.fromRGB(255, 255, 255)
+	button.TextSize = 14
+	button.Parent = window
+
+	button.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+
+	button.Activated:Connect(submitCountryName)
+
+	input.FocusLost:Connect(function(enterPressed)
+		if enterPressed then
+			submitCountryName()
+		end
+	end)
+
+	countryMenuGui = gui
+	countryNameInput = input
+end
+
+local function showCountryMenu()
+	ensureCountryMenuGui()
+
+	if localPlayer:GetAttribute("CountryName") then
+		hideCountryMenu()
+		return
+	end
+
+	if countryMenuGui then
+		countryMenuGui.Enabled = true
+	end
+
+	if countryNameInput then
+		countryNameInput.Text = ""
+		countryNameInput:CaptureFocus()
+	end
+end
+
 local function handleUnitAction(actionId: string, actionText: string)
 	if actionId == "Move" then
 		movementMode = true
@@ -791,3 +927,11 @@ else
 		end
 	end)
 end
+
+localPlayer:GetAttributeChangedSignal("CountryName"):Connect(function()
+	if localPlayer:GetAttribute("CountryName") then
+		hideCountryMenu()
+	end
+end)
+
+showCountryMenu()
