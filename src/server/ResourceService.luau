@@ -51,8 +51,13 @@ local function getResourceCandidates(biomeName: string): { string }
 	return candidates
 end
 
-local function shouldPlaceResource(random: Random): boolean
-	return random:NextNumber() < ResourceConfig.Generation.BaseChance
+local function shouldPlaceResource(random: Random, resourceName: string?): boolean
+	local rarity = 1
+	if resourceName then
+		rarity = ResourceConfig.Types[resourceName].Rarity or 1
+	end
+
+	return random:NextNumber() < ResourceConfig.Generation.BaseChance * rarity
 end
 
 local function chooseResource(candidates: { string }, random: Random): string?
@@ -255,9 +260,9 @@ function ResourceService.Generate()
 
 			if typeof(x) == "number" and typeof(z) == "number" and typeof(biomeName) == "string" then
 				local candidates = getResourceCandidates(biomeName)
-				if #candidates > 0 and shouldPlaceResource(random) then
+				if #candidates > 0 then
 					local resourceName = chooseResource(candidates, random)
-					if resourceName then
+					if resourceName and shouldPlaceResource(random, resourceName) then
 						local marker = createResourceVisual(resourcesFolder, tile, resourceName)
 						applyResourceToTile(tile, resourceName, marker)
 					end

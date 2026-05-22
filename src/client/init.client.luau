@@ -12,9 +12,11 @@ local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
 local moveUnitEvent = remotesFolder:WaitForChild("MoveUnit") :: RemoteEvent
 local unitActionEvent = remotesFolder:WaitForChild("UnitAction") :: RemoteEvent
 local createCountryEvent = remotesFolder:WaitForChild("CreateCountry") :: RemoteEvent
+local createUnitEvent = remotesFolder:WaitForChild("CreateUnit") :: RemoteEvent
 
 local selectedUnitId: string? = nil
 local selectedUnitModel: Model? = nil
+local selectedCityModel: Model? = nil
 local selectionHighlight: Highlight? = nil
 local movementMode = false
 local ignoreNextWorldClick = false
@@ -29,6 +31,8 @@ local cityNameWindow: Frame? = nil
 local cityNameInput: TextBox? = nil
 local countryMenuGui: ScreenGui? = nil
 local countryNameInput: TextBox? = nil
+local cityProductionGui: ScreenGui? = nil
+local cityProductionWindow: Frame? = nil
 local gameHudGui: ScreenGui? = nil
 local hudCountryLabel: TextLabel? = nil
 local hudContextTitle: TextLabel? = nil
@@ -59,6 +63,7 @@ local WORLD_MAP_EXPECTED_TILES = MapConfig.Map.Width * MapConfig.Map.Length
 local COUNTRY_TERRITORY_RADIUS = 5
 local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
+	{ Id = "BuildImprovement", Text = "Улучшить ресурс", BuilderOnly = true },
 	{ Id = "Move", Text = "Переместить" },
 	{ Id = "Rest", Text = "Отдых" },
 	{ Id = "Fortify", Text = "Укрепиться" },
@@ -794,6 +799,87 @@ local function setHudContextForCity(model: Model)
 	setHudContext(title, subtitleCountry .. "   " .. location, stats)
 end
 
+local function hideCityProductionWindow()
+	if cityProductionWindow then
+		cityProductionWindow.Visible = false
+	end
+end
+
+local function requestCityUnit(unitType: string)
+	if not selectedCityModel then
+		return
+	end
+
+	local cityId = selectedCityModel:GetAttribute("CityId")
+	if typeof(cityId) == "string" then
+		createUnitEvent:FireServer(cityId, unitType)
+	end
+end
+
+local function createProductionButton(parent: Instance, text: string, unitType: string, order: number)
+	local button = createHudButton(parent, text, UDim2.new(1, 0, 0, 30))
+	button.LayoutOrder = order
+	button.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	button.Activated:Connect(function()
+		requestCityUnit(unitType)
+	end)
+end
+
+local function ensureCityProductionGui()
+	if cityProductionGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "CityProductionGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.AnchorPoint = Vector2.new(0.5, 1)
+	window.BackgroundColor3 = HUD_DARK
+	window.BackgroundTransparency = 0.03
+	window.BorderSizePixel = 0
+	window.Position = UDim2.new(0.5, 0, 1, -18)
+	window.Size = UDim2.fromOffset(260, 150)
+	window.Visible = false
+	window.Parent = gui
+	addPadding(window, 12)
+	addStroke(window, HUD_GOLD, 0.45)
+
+	local title = createHudLabel(window, "Производство города", UDim2.new(1, 0, 0, 22), 15, true)
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local list = Instance.new("Frame")
+	list.BackgroundTransparency = 1
+	list.Position = UDim2.fromOffset(0, 32)
+	list.Size = UDim2.new(1, 0, 1, -32)
+	list.Parent = window
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 7)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	createProductionButton(list, "Создать строителя", "Builder", 1)
+	createProductionButton(list, "Создать лучника", "Archer", 2)
+	createProductionButton(list, "Создать разведчика", "Scout", 3)
+
+	cityProductionGui = gui
+	cityProductionWindow = window
+end
+
+local function showCityProductionWindow(model: Model)
+	selectedCityModel = model
+	ensureCityProductionGui()
+	if cityProductionWindow then
+		cityProductionWindow.Visible = model:GetAttribute("OwnerUserId") == localPlayer.UserId
+	end
+end
+
 local function ensureGameHud()
 	if gameHudGui then
 		return
@@ -1406,7 +1492,7 @@ local function showUnitActionWindow(model: Model)
 
 	local order = 0
 	for _, action in ACTION_BUTTONS do
-		if not action.SettlerOnly or unitType == "Settler" then
+		if (not action.SettlerOnly or unitType == "Settler") and (not action.BuilderOnly or unitType == "Builder") then
 			order += 1
 			createActionButton(action.Id, action.Text, order)
 		end
@@ -1421,18 +1507,22 @@ local function clearSelection()
 	clearHighlights()
 	hideUnitActionWindow()
 	closeCityNameDialog()
+	hideCityProductionWindow()
 	selectedUnitId = nil
 	selectedUnitModel = nil
+	selectedCityModel = nil
 	setHudContext("Империя", "Выберите юнит или город", "Режим: без ходов")
 end
 
 local function selectUnit(model: Model)
 	ensureGameHud()
 	clearHighlights()
+	hideCityProductionWindow()
 	movementMode = true
 
 	selectedUnitModel = model
 	selectedUnitId = model:GetAttribute("UnitId") :: string
+	selectedCityModel = nil
 
 	selectionHighlight = Instance.new("Highlight")
 	selectionHighlight.Name = "SelectedUnitHighlight"
@@ -1483,7 +1573,9 @@ mouse.Button1Down:Connect(function()
 		closeCityNameDialog()
 		selectedUnitId = nil
 		selectedUnitModel = nil
+		selectedCityModel = cityModel
 		setHudContextForCity(cityModel)
+		showCityProductionWindow(cityModel)
 		return
 	end
 

@@ -384,6 +384,14 @@ function CityService.FoundCity(player: Player, x: number, z: number, requestedCi
 	return cityModel, nil
 end
 
+function CityService.GetCity(cityId: string)
+	return citiesById[cityId]
+end
+
+function CityService.GetCities()
+	return citiesById
+end
+
 function CityService.Start()
 	getCitiesFolder()
 	getOrCreateCreateCountryEvent().OnServerEvent:Connect(onCreateCountry)

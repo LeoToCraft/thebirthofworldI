@@ -16,11 +16,18 @@ local UNITS_FOLDER_NAME = "Units"
 local REMOTES_FOLDER_NAME = "Remotes"
 local MOVE_UNIT_EVENT_NAME = "MoveUnit"
 local UNIT_ACTION_EVENT_NAME = "UnitAction"
+local CREATE_UNIT_EVENT_NAME = "CreateUnit"
 local HEALTH_BAR_NAME = "UnitHealthBar"
+local IMPROVEMENTS_FOLDER_NAME = "Improvements"
 
 local unitsById = {}
 local occupiedTiles = {}
 local playerOrder = 0
+local botOwners = {
+	{ UserId = -101, Name = "Bot Rome" },
+	{ UserId = -102, Name = "Bot Egypt" },
+	{ UserId = -103, Name = "Bot Japan" },
+}
 
 local function getTileName(x: number, z: number): string
 	return string.format("Tile_%03d_%03d", x, z)
@@ -99,6 +106,26 @@ local function getOrCreateUnitActionEvent(): RemoteEvent
 	newActionEvent.Parent = remotesFolder
 
 	return newActionEvent
+end
+
+local function getOrCreateCreateUnitEvent(): RemoteEvent
+	local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = REMOTES_FOLDER_NAME
+		remotesFolder.Parent = ReplicatedStorage
+	end
+
+	local createUnitEvent = remotesFolder:FindFirstChild(CREATE_UNIT_EVENT_NAME)
+	if createUnitEvent and createUnitEvent:IsA("RemoteEvent") then
+		return createUnitEvent
+	end
+
+	local newCreateUnitEvent = Instance.new("RemoteEvent")
+	newCreateUnitEvent.Name = CREATE_UNIT_EVENT_NAME
+	newCreateUnitEvent.Parent = remotesFolder
+
+	return newCreateUnitEvent
 end
 
 local function canUnitEnter(unitType: string, tile: BasePart): boolean
@@ -431,6 +458,10 @@ local function findSpawnTile(unitType: string, startX: number, startZ: number): 
 end
 
 local function createUnit(player: Player, unitType: string, x: number, z: number): Model?
+	if not UnitConfig.Types[unitType] then
+		return nil
+	end
+
 	local tile = getTile(x, z)
 	if not tile then
 		return nil
@@ -456,6 +487,86 @@ local function createUnit(player: Player, unitType: string, x: number, z: number
 	occupiedTiles[getTileKey(x, z)] = unitId
 
 	return model
+end
+
+local function findOpenAdjacentTile(unitType: string, x: number, z: number): (number?, number?)
+	for radius = 1, 3 do
+		for targetX = x - radius, x + radius do
+			for targetZ = z - radius, z + radius do
+				local distance = math.abs(targetX - x) + math.abs(targetZ - z)
+				if distance <= math.max(radius, 1) and isOpenForUnit(unitType, targetX, targetZ) then
+					return targetX, targetZ
+				end
+			end
+		end
+	end
+
+	return nil, nil
+end
+
+local function getImprovementsFolder(): Folder
+	local folder = Workspace:FindFirstChild(IMPROVEMENTS_FOLDER_NAME)
+	if folder then
+		return folder :: Folder
+	end
+
+	local newFolder = Instance.new("Folder")
+	newFolder.Name = IMPROVEMENTS_FOLDER_NAME
+	newFolder.Parent = Workspace
+
+	return newFolder
+end
+
+local function buildResourceImprovement(unitState)
+	if unitState.UnitType ~= "Builder" then
+		return
+	end
+
+	local tile = getTile(unitState.GridX, unitState.GridZ)
+	if not tile or tile:GetAttribute("ResourceId") == nil or tile:GetAttribute("ImprovedResource") == true then
+		setUnitActionState(unitState, "BuildFailed", false, false)
+		return
+	end
+
+	tile:SetAttribute("ImprovedResource", true)
+	tile:SetAttribute("FoodYield", (tile:GetAttribute("FoodYield") or 0) + 1)
+	tile:SetAttribute("ProductionYield", (tile:GetAttribute("ProductionYield") or 0) + 1)
+
+	local marker = Instance.new("Part")
+	marker.Name = "Improvement"
+	marker.Anchored = true
+	marker.CanCollide = false
+	marker.CanQuery = false
+	marker.Color = Color3.fromRGB(140, 210, 120)
+	marker.Material = Enum.Material.Neon
+	marker.Size = Vector3.new(1.1, 0.12, 1.1)
+	marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.1, tile.Position.Z)
+	marker:SetAttribute("GridX", unitState.GridX)
+	marker:SetAttribute("GridZ", unitState.GridZ)
+	marker:SetAttribute("ResourceId", tile:GetAttribute("ResourceId"))
+	marker.Parent = getImprovementsFolder()
+
+	setUnitActionState(unitState, "BuiltImprovement", false, false)
+end
+
+local function onCreateUnit(player: Player, cityId: string, unitType: string)
+	if typeof(cityId) ~= "string" or typeof(unitType) ~= "string" then
+		return
+	end
+
+	if unitType ~= "Builder" and unitType ~= "Archer" and unitType ~= "Scout" then
+		return
+	end
+
+	local cityState = CityService.GetCity(cityId)
+	if not cityState or cityState.OwnerUserId ~= player.UserId then
+		return
+	end
+
+	local x, z = findOpenAdjacentTile(unitType, cityState.GridX, cityState.GridZ)
+	if x and z then
+		createUnit(player, unitType, x, z)
+	end
 end
 
 local function spawnStartingUnits(player: Player)
@@ -596,14 +707,80 @@ local function onUnitAction(player: Player, unitId: string, actionId: string, ac
 		else
 			setUnitActionState(unitState, "FoundCityFailed", false, false)
 		end
+	elseif actionId == "BuildImprovement" then
+		buildResourceImprovement(unitState)
+	end
+end
+
+local function spawnBotUnits()
+	local spawnPoints = {
+		{ X = 16, Z = 16 },
+		{ X = MapConfig.Map.Width - 16, Z = 18 },
+		{ X = 18, Z = MapConfig.Map.Length - 16 },
+	}
+
+	for index, bot in botOwners do
+		local point = spawnPoints[index]
+		local scoutX, scoutZ = findSpawnTile("Scout", point.X, point.Z)
+		if scoutX and scoutZ then
+			createUnit(bot :: any, "Scout", scoutX, scoutZ)
+		end
+
+		local archerX, archerZ = findSpawnTile("Archer", point.X + 2, point.Z)
+		if archerX and archerZ then
+			createUnit(bot :: any, "Archer", archerX, archerZ)
+		end
+	end
+end
+
+local function moveBotUnits()
+	local random = Random.new()
+
+	while true do
+		task.wait(4)
+
+		for unitId, unitState in unitsById do
+			if unitState.OwnerUserId < 0 and not unitState.IsMoving then
+				local unit = UnitConfig.Types[unitState.UnitType]
+				local directions = {
+					{ X = 1, Z = 0 },
+					{ X = -1, Z = 0 },
+					{ X = 0, Z = 1 },
+					{ X = 0, Z = -1 },
+				}
+				local direction = directions[random:NextInteger(1, #directions)]
+				local targetX = unitState.GridX + direction.X * math.max(1, math.min(unit.Movement, 2))
+				local targetZ = unitState.GridZ + direction.Z * math.max(1, math.min(unit.Movement, 2))
+				local tile = getTile(targetX, targetZ)
+				local targetKey = getTileKey(targetX, targetZ)
+
+				if tile and canUnitEnter(unitState.UnitType, tile) and not occupiedTiles[targetKey] then
+					occupiedTiles[getTileKey(unitState.GridX, unitState.GridZ)] = nil
+					occupiedTiles[targetKey] = unitId
+					unitState.GridX = targetX
+					unitState.GridZ = targetZ
+					unitState.IsMoving = true
+					unitState.Model:SetAttribute("IsMoving", true)
+					setUnitGridAttributes(unitState.Model, targetX, targetZ)
+					tweenModelToTile(unitState.Model, tile, function()
+						if unitsById[unitId] == unitState then
+							unitState.IsMoving = false
+							unitState.Model:SetAttribute("IsMoving", false)
+						end
+					end)
+				end
+			end
+		end
 	end
 end
 
 function UnitService.Start()
 	local moveEvent = getOrCreateMoveEvent()
 	local unitActionEvent = getOrCreateUnitActionEvent()
+	local createUnitEvent = getOrCreateCreateUnitEvent()
 	moveEvent.OnServerEvent:Connect(onMoveUnit)
 	unitActionEvent.OnServerEvent:Connect(onUnitAction)
+	createUnitEvent.OnServerEvent:Connect(onCreateUnit)
 
 	Players.PlayerAdded:Connect(spawnStartingUnits)
 	Players.PlayerRemoving:Connect(removePlayerUnits)
@@ -611,6 +788,9 @@ function UnitService.Start()
 	for _, player in Players:GetPlayers() do
 		spawnStartingUnits(player)
 	end
+
+	spawnBotUnits()
+	task.spawn(moveBotUnits)
 end
 
 return UnitService
