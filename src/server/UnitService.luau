@@ -14,6 +14,7 @@ local MAP_FOLDER_NAME = "GeneratedMap"
 local UNITS_FOLDER_NAME = "Units"
 local REMOTES_FOLDER_NAME = "Remotes"
 local MOVE_UNIT_EVENT_NAME = "MoveUnit"
+local HEALTH_BAR_NAME = "UnitHealthBar"
 
 local unitsById = {}
 local occupiedTiles = {}
@@ -145,6 +146,130 @@ local function getFirstBasePart(instance: Instance): BasePart?
 	end
 
 	return nil
+end
+
+local function getUnitMaxHealth(model: Model): number
+	local maxHealth = model:GetAttribute("MaxHealth")
+	if typeof(maxHealth) == "number" and maxHealth > 0 then
+		return maxHealth
+	end
+
+	local unitType = model:GetAttribute("UnitType")
+	local unit = typeof(unitType) == "string" and UnitConfig.Types[unitType] or nil
+	if unit then
+		return unit.Health
+	end
+
+	return 1
+end
+
+local function updateHealthBar(model: Model)
+	local adornee = model.PrimaryPart or getFirstBasePart(model)
+	if not adornee then
+		return
+	end
+
+	local healthBar = adornee:FindFirstChild(HEALTH_BAR_NAME)
+	if not healthBar or not healthBar:IsA("BillboardGui") then
+		return
+	end
+
+	local container = healthBar:FindFirstChild("Container")
+	local fill = container and container:FindFirstChild("Fill")
+	local label = healthBar:FindFirstChild("HealthText")
+	if not container or not container:IsA("Frame") or not fill or not fill:IsA("Frame") then
+		return
+	end
+
+	local maxHealth = getUnitMaxHealth(model)
+	local health = model:GetAttribute("Health")
+	if typeof(health) ~= "number" then
+		health = maxHealth
+	end
+
+	local ratio = math.clamp(health / maxHealth, 0, 1)
+	fill.Size = UDim2.fromScale(ratio, 1)
+
+	if ratio > 0.5 then
+		fill.BackgroundColor3 = Color3.fromRGB(82, 214, 116)
+	elseif ratio > 0.25 then
+		fill.BackgroundColor3 = Color3.fromRGB(245, 195, 75)
+	else
+		fill.BackgroundColor3 = Color3.fromRGB(231, 74, 62)
+	end
+
+	if label and label:IsA("TextLabel") then
+		label.Text = string.format("%d/%d", math.max(0, math.floor(health + 0.5)), math.floor(maxHealth + 0.5))
+	end
+end
+
+local function createHealthBar(model: Model)
+	local adornee = model.PrimaryPart or getFirstBasePart(model)
+	if not adornee then
+		return
+	end
+
+	local existing = adornee:FindFirstChild(HEALTH_BAR_NAME)
+	if existing then
+		existing:Destroy()
+	end
+
+	local healthBar = Instance.new("BillboardGui")
+	local _, modelSize = model:GetBoundingBox()
+	healthBar.Name = HEALTH_BAR_NAME
+	healthBar.AlwaysOnTop = true
+	healthBar.MaxDistance = 300
+	healthBar.Size = UDim2.fromOffset(86, 18)
+	healthBar.StudsOffset = Vector3.new(0, modelSize.Y / 2 + 0.75, 0)
+	healthBar.Parent = adornee
+
+	local container = Instance.new("Frame")
+	container.Name = "Container"
+	container.AnchorPoint = Vector2.new(0.5, 1)
+	container.BackgroundColor3 = Color3.fromRGB(34, 34, 38)
+	container.BorderSizePixel = 0
+	container.Position = UDim2.fromScale(0.5, 1)
+	container.Size = UDim2.new(1, 0, 0, 8)
+	container.Parent = healthBar
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Transparency = 0.25
+	stroke.Thickness = 1
+	stroke.Parent = container
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.BackgroundColor3 = Color3.fromRGB(82, 214, 116)
+	fill.BorderSizePixel = 0
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.Parent = container
+
+	local label = Instance.new("TextLabel")
+	label.Name = "HealthText"
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.Position = UDim2.fromOffset(0, 0)
+	label.Size = UDim2.new(1, 0, 0, 10)
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.35
+	label.Parent = healthBar
+
+	local healthConnection = model:GetAttributeChangedSignal("Health"):Connect(function()
+		updateHealthBar(model)
+	end)
+	local maxHealthConnection = model:GetAttributeChangedSignal("MaxHealth"):Connect(function()
+		updateHealthBar(model)
+	end)
+	local destroyingConnection
+	destroyingConnection = model.Destroying:Connect(function()
+		healthConnection:Disconnect()
+		maxHealthConnection:Disconnect()
+		destroyingConnection:Disconnect()
+	end)
+
+	updateHealthBar(model)
 end
 
 local function createFallbackModel(unitType: string): Model
@@ -291,6 +416,7 @@ local function createUnit(player: Player, unitType: string, x: number, z: number
 	model.Name = string.format("%s_%s", UnitConfig.Types[unitType].DisplayName, player.Name)
 	setUnitAttributes(model, unitId, player, unitType, x, z)
 	applyUnitAttributesToParts(model, unitId, player, unitType, x, z)
+	createHealthBar(model)
 	model.Parent = getUnitsFolder()
 	moveModelToTile(model, tile)
 

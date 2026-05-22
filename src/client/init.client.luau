@@ -174,6 +174,10 @@ local function createHealthBar(model: Model)
 	end
 
 	local existing = adornee:FindFirstChild(HEALTH_BAR_NAME)
+	if existing and existing:IsA("BillboardGui") then
+		return
+	end
+
 	if existing then
 		existing:Destroy()
 	end

@@ -16,7 +16,6 @@ UnitConfig.Types = {
 			Grass = true,
 			Sand = true,
 			Winter = true,
-			Mountain = true,
 		},
 	},
 	Settler = {
@@ -30,7 +29,6 @@ UnitConfig.Types = {
 			Grass = true,
 			Sand = true,
 			Winter = true,
-			Mountain = true,
 		},
 	},
 }
