@@ -34,6 +34,9 @@ local hudCountryLabel: TextLabel? = nil
 local hudContextTitle: TextLabel? = nil
 local hudContextSubtitle: TextLabel? = nil
 local hudContextStats: TextLabel? = nil
+local worldMapGrid: Frame? = nil
+local worldMapMarkers: Frame? = nil
+local avatarImagesByUserId: { [number]: string } = {}
 
 local highlightFolder = Instance.new("Folder")
 highlightFolder.Name = "MovementHighlights"
@@ -46,6 +49,11 @@ local HUD_PANEL_LIGHT = Color3.fromRGB(45, 52, 62)
 local HUD_GOLD = Color3.fromRGB(226, 190, 112)
 local HUD_TEXT = Color3.fromRGB(245, 239, 221)
 local HUD_MUTED = Color3.fromRGB(184, 191, 198)
+local WORLD_MAP_TILE_SIZE = 2
+local WORLD_MAP_SIZE = UDim2.fromOffset(
+	MapConfig.Map.Width * WORLD_MAP_TILE_SIZE,
+	MapConfig.Map.Length * WORLD_MAP_TILE_SIZE
+)
 local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "Move", Text = "Переместить" },
@@ -456,6 +464,131 @@ local function createResourceChip(parent: Instance, text: string)
 	label.TextXAlignment = Enum.TextXAlignment.Center
 end
 
+local function getBiomeColor(biome: any): Color3
+	if typeof(biome) == "string" then
+		local config = MapConfig.Biomes[biome]
+		if config then
+			return config.Color
+		end
+	end
+
+	return Color3.fromRGB(50, 55, 60)
+end
+
+local function createWorldMapTiles(parent: Frame)
+	parent:ClearAllChildren()
+
+	local mapFolder = getMapFolder()
+	for z = 1, MapConfig.Map.Length do
+		for x = 1, MapConfig.Map.Width do
+			local tileColor = Color3.fromRGB(42, 48, 54)
+			local tile = mapFolder and mapFolder:FindFirstChild(getTileName(x, z))
+			if tile and tile:IsA("BasePart") then
+				tileColor = getBiomeColor(tile:GetAttribute("Biome"))
+			end
+
+			local cell = Instance.new("Frame")
+			cell.Name = string.format("Cell_%03d_%03d", x, z)
+			cell.BackgroundColor3 = tileColor
+			cell.BorderSizePixel = 0
+			cell.Position = UDim2.fromOffset((x - 1) * WORLD_MAP_TILE_SIZE, (z - 1) * WORLD_MAP_TILE_SIZE)
+			cell.Size = UDim2.fromOffset(WORLD_MAP_TILE_SIZE, WORLD_MAP_TILE_SIZE)
+			cell.ZIndex = 1
+			cell.Parent = parent
+		end
+	end
+end
+
+local function getPlayerMapPosition(userId: number): (number?, number?)
+	local citiesFolder = getCitiesFolder()
+	if citiesFolder then
+		for _, city in citiesFolder:GetChildren() do
+			if city:GetAttribute("OwnerUserId") == userId then
+				local x = city:GetAttribute("GridX")
+				local z = city:GetAttribute("GridZ")
+				if typeof(x) == "number" and typeof(z) == "number" then
+					return x, z
+				end
+			end
+		end
+	end
+
+	local unitsFolder = getUnitsFolder()
+	if unitsFolder then
+		for _, unit in unitsFolder:GetChildren() do
+			if unit:GetAttribute("OwnerUserId") == userId then
+				local x = unit:GetAttribute("GridX")
+				local z = unit:GetAttribute("GridZ")
+				if typeof(x) == "number" and typeof(z) == "number" then
+					return x, z
+				end
+			end
+		end
+	end
+
+	return nil, nil
+end
+
+local function getAvatarImage(userId: number): string
+	local cachedImage = avatarImagesByUserId[userId]
+	if cachedImage then
+		return cachedImage
+	end
+
+	local ok, image = pcall(function()
+		return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+	end)
+
+	if ok then
+		avatarImagesByUserId[userId] = image
+		return image
+	end
+
+	return ""
+end
+
+local function updateWorldMapMarkers()
+	if not worldMapMarkers then
+		return
+	end
+
+	worldMapMarkers:ClearAllChildren()
+
+	for _, player in Players:GetPlayers() do
+		local x, z = getPlayerMapPosition(player.UserId)
+		if x and z then
+			local marker = Instance.new("ImageLabel")
+			marker.Name = "Player_" .. tostring(player.UserId)
+			marker.AnchorPoint = Vector2.new(0.5, 0.5)
+			marker.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+			marker.BorderSizePixel = 0
+			marker.Image = getAvatarImage(player.UserId)
+			marker.Position = UDim2.fromScale((x - 0.5) / MapConfig.Map.Width, (z - 0.5) / MapConfig.Map.Length)
+			marker.Size = UDim2.fromOffset(20, 20)
+			marker.ZIndex = 4
+			marker.Parent = worldMapMarkers
+
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(1, 0)
+			corner.Parent = marker
+
+			local stroke = Instance.new("UIStroke")
+			stroke.Color = player == localPlayer and Color3.fromRGB(255, 230, 120) or Color3.fromRGB(255, 255, 255)
+			stroke.Thickness = 2
+			stroke.Parent = marker
+		end
+	end
+end
+
+local function startWorldMapUpdates()
+	task.spawn(function()
+		while gameHudGui do
+			updateWorldMapMarkers()
+			task.wait(1)
+		end
+	end)
+end
+
 local function updateGameHudCountry()
 	if not hudCountryLabel then
 		return
@@ -572,27 +705,6 @@ local function ensureGameHud()
 	era.TextXAlignment = Enum.TextXAlignment.Right
 	era.TextColor3 = HUD_MUTED
 
-	local leftRail = Instance.new("Frame")
-	leftRail.Name = "LeftRail"
-	leftRail.BackgroundColor3 = HUD_DARK
-	leftRail.BackgroundTransparency = 0.08
-	leftRail.BorderSizePixel = 0
-	leftRail.Position = UDim2.fromOffset(12, 64)
-	leftRail.Size = UDim2.fromOffset(54, 294)
-	leftRail.Parent = gui
-	addPadding(leftRail, 7)
-	addStroke(leftRail, HUD_GOLD, 0.6)
-
-	local railLayout = Instance.new("UIListLayout")
-	railLayout.Padding = UDim.new(0, 8)
-	railLayout.SortOrder = Enum.SortOrder.LayoutOrder
-	railLayout.Parent = leftRail
-
-	for _, text in { "Тех", "Культ", "Дер", "Люди", "Отч", "Лин" } do
-		local button = createHudButton(leftRail, text, UDim2.fromOffset(40, 38))
-		button.TextSize = 11
-	end
-
 	local rightPanel = Instance.new("Frame")
 	rightPanel.Name = "RightPanel"
 	rightPanel.AnchorPoint = Vector2.new(1, 0)
@@ -620,56 +732,54 @@ local function ensureGameHud()
 	miniMap.BackgroundTransparency = 0.04
 	miniMap.BorderSizePixel = 0
 	miniMap.Position = UDim2.new(0, 16, 1, -16)
-	miniMap.Size = UDim2.fromOffset(236, 156)
+	miniMap.Size = UDim2.fromOffset(264, 306)
 	miniMap.Parent = gui
 	addPadding(miniMap, 10)
 	addStroke(miniMap, HUD_GOLD, 0.45)
 
-	local miniTitle = createHudLabel(miniMap, "Карта мира", UDim2.new(1, 0, 0, 20), 13, true)
+	local miniTitle = createHudLabel(miniMap, "Вся карта мира", UDim2.new(1, 0, 0, 20), 13, true)
 	miniTitle.TextColor3 = Color3.fromRGB(255, 230, 164)
 
 	local mapBox = Instance.new("Frame")
 	mapBox.Name = "MapBox"
-	mapBox.BackgroundColor3 = Color3.fromRGB(28, 62, 63)
+	mapBox.BackgroundColor3 = Color3.fromRGB(13, 18, 22)
 	mapBox.BorderSizePixel = 0
+	mapBox.ClipsDescendants = true
 	mapBox.Position = UDim2.fromOffset(0, 28)
-	mapBox.Size = UDim2.new(1, 0, 1, -28)
+	mapBox.Size = WORLD_MAP_SIZE
 	mapBox.Parent = miniMap
 	addStroke(mapBox, Color3.fromRGB(96, 121, 111), 0.45)
 
-	for i = 1, 18 do
-		local dot = Instance.new("Frame")
-		dot.BackgroundColor3 = i % 4 == 0 and Color3.fromRGB(211, 196, 132) or Color3.fromRGB(58, 126, 91)
-		dot.BorderSizePixel = 0
-		dot.Position = UDim2.fromScale(((i * 37) % 100) / 100, ((i * 61) % 100) / 100)
-		dot.Size = UDim2.fromOffset(10, 6)
-		dot.Parent = mapBox
-	end
+	worldMapGrid = Instance.new("Frame")
+	worldMapGrid.Name = "TileGrid"
+	worldMapGrid.BackgroundTransparency = 1
+	worldMapGrid.Size = UDim2.fromScale(1, 1)
+	worldMapGrid.Parent = mapBox
 
-	local bottomCenter = Instance.new("Frame")
-	bottomCenter.Name = "ContextPanel"
-	bottomCenter.AnchorPoint = Vector2.new(0.5, 1)
-	bottomCenter.BackgroundColor3 = HUD_DARK
-	bottomCenter.BackgroundTransparency = 0.03
-	bottomCenter.BorderSizePixel = 0
-	bottomCenter.Position = UDim2.new(0.5, 0, 1, -16)
-	bottomCenter.Size = UDim2.fromOffset(460, 116)
-	bottomCenter.Parent = gui
-	addPadding(bottomCenter, 14)
-	addStroke(bottomCenter, HUD_GOLD, 0.45)
+	worldMapMarkers = Instance.new("Frame")
+	worldMapMarkers.Name = "PlayerMarkers"
+	worldMapMarkers.BackgroundTransparency = 1
+	worldMapMarkers.Size = UDim2.fromScale(1, 1)
+	worldMapMarkers.ZIndex = 3
+	worldMapMarkers.Parent = mapBox
 
-	hudContextTitle = createHudLabel(bottomCenter, "Империя", UDim2.new(1, 0, 0, 26), 18, true)
-	hudContextTitle.TextColor3 = Color3.fromRGB(255, 230, 164)
-
-	hudContextSubtitle = createHudLabel(bottomCenter, "Выберите юнит или город", UDim2.new(1, 0, 0, 20), 13, false)
-	hudContextSubtitle.Position = UDim2.fromOffset(0, 32)
-	hudContextSubtitle.TextColor3 = HUD_MUTED
-
-	hudContextStats = createHudLabel(bottomCenter, "Режим: без ходов", UDim2.new(1, 0, 0, 20), 13, true)
-	hudContextStats.Position = UDim2.fromOffset(0, 62)
+	local legend = createHudLabel(miniMap, "каждая точка = клетка, круг = игрок", UDim2.new(1, 0, 0, 18), 11, false)
+	legend.Position = UDim2.fromOffset(0, 274)
+	legend.TextColor3 = HUD_MUTED
 
 	gameHudGui = gui
 	updateGameHudCountry()
+	createWorldMapTiles(worldMapGrid)
+	updateWorldMapMarkers()
+	startWorldMapUpdates()
+
+	if not getMapFolder() then
+		Workspace.ChildAdded:Connect(function(child)
+			if child.Name == "GeneratedMap" and worldMapGrid then
+				createWorldMapTiles(worldMapGrid)
+			end
+		end)
+	end
 end
 
 local function ensureUnitActionGui()
