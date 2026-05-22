@@ -14,6 +14,7 @@ local MAP_FOLDER_NAME = "GeneratedMap"
 local UNITS_FOLDER_NAME = "Units"
 local REMOTES_FOLDER_NAME = "Remotes"
 local MOVE_UNIT_EVENT_NAME = "MoveUnit"
+local UNIT_ACTION_EVENT_NAME = "UnitAction"
 local HEALTH_BAR_NAME = "UnitHealthBar"
 
 local unitsById = {}
@@ -79,6 +80,26 @@ local function getOrCreateMoveEvent(): RemoteEvent
 	return newMoveEvent
 end
 
+local function getOrCreateUnitActionEvent(): RemoteEvent
+	local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = REMOTES_FOLDER_NAME
+		remotesFolder.Parent = ReplicatedStorage
+	end
+
+	local actionEvent = remotesFolder:FindFirstChild(UNIT_ACTION_EVENT_NAME)
+	if actionEvent and actionEvent:IsA("RemoteEvent") then
+		return actionEvent
+	end
+
+	local newActionEvent = Instance.new("RemoteEvent")
+	newActionEvent.Name = UNIT_ACTION_EVENT_NAME
+	newActionEvent.Parent = remotesFolder
+
+	return newActionEvent
+end
+
 local function canUnitEnter(unitType: string, tile: BasePart): boolean
 	local unit = UnitConfig.Types[unitType]
 	local biome = tile:GetAttribute("Biome")
@@ -106,6 +127,9 @@ local function setUnitAttributes(instance: Instance, unitId: string, player: Pla
 	instance:SetAttribute("Movement", UnitConfig.Types[unitType].Movement)
 	instance:SetAttribute("Attack", UnitConfig.Types[unitType].Attack)
 	instance:SetAttribute("IsMoving", false)
+	instance:SetAttribute("Fortified", false)
+	instance:SetAttribute("FortifyUntilHealed", false)
+	instance:SetAttribute("ActionState", "Ready")
 end
 
 local function applyUnitAttributesToParts(model: Model, unitId: string, player: Player, unitType: string, x: number, z: number)
@@ -462,6 +486,33 @@ local function removePlayerUnits(player: Player)
 	end
 end
 
+local function removeUnit(unitId: string, unitState)
+	occupiedTiles[getTileKey(unitState.GridX, unitState.GridZ)] = nil
+
+	if unitState.Model then
+		unitState.Model:Destroy()
+	end
+
+	unitsById[unitId] = nil
+end
+
+local function healUnit(unitState, amount: number)
+	local maxHealth = unitState.Model:GetAttribute("MaxHealth")
+	local currentHealth = unitState.Model:GetAttribute("Health")
+	if typeof(maxHealth) ~= "number" or typeof(currentHealth) ~= "number" then
+		return
+	end
+
+	local nextHealth = math.min(maxHealth, currentHealth + amount)
+	unitState.Model:SetAttribute("Health", nextHealth)
+end
+
+local function setUnitActionState(unitState, actionState: string, fortified: boolean, fortifyUntilHealed: boolean)
+	unitState.Model:SetAttribute("ActionState", actionState)
+	unitState.Model:SetAttribute("Fortified", fortified)
+	unitState.Model:SetAttribute("FortifyUntilHealed", fortifyUntilHealed)
+end
+
 local function onMoveUnit(player: Player, unitId: string, targetX: number, targetZ: number)
 	if typeof(unitId) ~= "string" or typeof(targetX) ~= "number" or typeof(targetZ) ~= "number" then
 		return
@@ -502,6 +553,7 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 	unitState.GridZ = targetZ
 	unitState.IsMoving = true
 	unitState.Model:SetAttribute("IsMoving", true)
+	setUnitActionState(unitState, "Ready", false, false)
 	setUnitGridAttributes(unitState.Model, targetX, targetZ)
 	tweenModelToTile(unitState.Model, tile, function()
 		if unitsById[unitId] == unitState then
@@ -511,9 +563,36 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 	end)
 end
 
+local function onUnitAction(player: Player, unitId: string, actionId: string)
+	if typeof(unitId) ~= "string" or typeof(actionId) ~= "string" then
+		return
+	end
+
+	local unitState = unitsById[unitId]
+	if not unitState or unitState.OwnerUserId ~= player.UserId or unitState.IsMoving then
+		return
+	end
+
+	if actionId == "Rest" then
+		healUnit(unitState, 10)
+		setUnitActionState(unitState, "Resting", false, false)
+	elseif actionId == "Fortify" then
+		setUnitActionState(unitState, "Fortified", true, false)
+	elseif actionId == "FortifyHeal" then
+		healUnit(unitState, 15)
+		setUnitActionState(unitState, "FortifyHeal", true, true)
+	elseif actionId == "Delete" then
+		removeUnit(unitId, unitState)
+	elseif actionId == "FoundCity" then
+		setUnitActionState(unitState, "FoundCityPlanned", false, false)
+	end
+end
+
 function UnitService.Start()
 	local moveEvent = getOrCreateMoveEvent()
+	local unitActionEvent = getOrCreateUnitActionEvent()
 	moveEvent.OnServerEvent:Connect(onMoveUnit)
+	unitActionEvent.OnServerEvent:Connect(onUnitAction)
 
 	Players.PlayerAdded:Connect(spawnStartingUnits)
 	Players.PlayerRemoving:Connect(removePlayerUnits)

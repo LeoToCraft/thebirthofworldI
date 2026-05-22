@@ -6,19 +6,37 @@ local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
 local UnitConfig = require(ReplicatedStorage.Shared.UnitConfig)
 
 local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
 local mouse = localPlayer:GetMouse()
-local moveUnitEvent = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("MoveUnit")
+local remotesFolder = ReplicatedStorage:WaitForChild("Remotes")
+local moveUnitEvent = remotesFolder:WaitForChild("MoveUnit") :: RemoteEvent
+local unitActionEvent = remotesFolder:WaitForChild("UnitAction") :: RemoteEvent
 
 local selectedUnitId: string? = nil
 local selectedUnitModel: Model? = nil
 local selectionHighlight: Highlight? = nil
+local movementMode = false
+local ignoreNextWorldClick = false
 local healthBarConnections: { [Model]: { RBXScriptConnection } } = {}
+local unitActionGui: ScreenGui? = nil
+local unitActionWindow: Frame? = nil
+local unitActionTitle: TextLabel? = nil
+local unitActionStatus: TextLabel? = nil
+local unitActionList: Frame? = nil
 
 local highlightFolder = Instance.new("Folder")
 highlightFolder.Name = "MovementHighlights"
 highlightFolder.Parent = Workspace
 
 local HEALTH_BAR_NAME = "UnitHealthBar"
+local ACTION_BUTTONS = {
+	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
+	{ Id = "Move", Text = "Переместить" },
+	{ Id = "Rest", Text = "Отдых" },
+	{ Id = "Fortify", Text = "Укрепиться" },
+	{ Id = "FortifyHeal", Text = "Укрепиться до исцеления" },
+	{ Id = "Delete", Text = "Удалить юнита" },
+}
 
 local function getTileName(x: number, z: number): string
 	return string.format("Tile_%03d_%03d", x, z)
@@ -269,6 +287,14 @@ local function watchUnitsFolder(unitsFolder: Folder)
 	end)
 end
 
+local function clearMovementHighlights()
+	for _, child in highlightFolder:GetChildren() do
+		if child.Name == "MoveHighlight" then
+			child:Destroy()
+		end
+	end
+end
+
 local function clearHighlights()
 	highlightFolder:ClearAllChildren()
 
@@ -336,8 +362,211 @@ local function showMovementForSelectedUnit()
 	end
 end
 
+local function ensureUnitActionGui()
+	if unitActionGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "UnitActionGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.AnchorPoint = Vector2.new(1, 1)
+	window.BackgroundColor3 = Color3.fromRGB(28, 31, 36)
+	window.BorderSizePixel = 0
+	window.Position = UDim2.new(1, -18, 1, -18)
+	window.Size = UDim2.fromOffset(240, 284)
+	window.Visible = false
+	window.Parent = gui
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingBottom = UDim.new(0, 12)
+	padding.PaddingLeft = UDim.new(0, 12)
+	padding.PaddingRight = UDim.new(0, 12)
+	padding.PaddingTop = UDim.new(0, 12)
+	padding.Parent = window
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(232, 220, 170)
+	stroke.Transparency = 0.35
+	stroke.Thickness = 1
+	stroke.Parent = window
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.Size = UDim2.new(1, 0, 0, 22)
+	title.Text = "Юнит"
+	title.TextColor3 = Color3.fromRGB(255, 247, 214)
+	title.TextSize = 16
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = window
+
+	local status = Instance.new("TextLabel")
+	status.Name = "Status"
+	status.BackgroundTransparency = 1
+	status.Font = Enum.Font.Gotham
+	status.Position = UDim2.fromOffset(0, 24)
+	status.Size = UDim2.new(1, 0, 0, 18)
+	status.Text = "Выберите действие"
+	status.TextColor3 = Color3.fromRGB(198, 205, 214)
+	status.TextSize = 12
+	status.TextXAlignment = Enum.TextXAlignment.Left
+	status.Parent = window
+
+	local list = Instance.new("Frame")
+	list.Name = "Actions"
+	list.BackgroundTransparency = 1
+	list.Position = UDim2.fromOffset(0, 52)
+	list.Size = UDim2.new(1, 0, 1, -52)
+	list.Parent = window
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 7)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	unitActionGui = gui
+	unitActionWindow = window
+	unitActionTitle = title
+	unitActionStatus = status
+	unitActionList = list
+end
+
+local function hideUnitActionWindow()
+	movementMode = false
+
+	if unitActionWindow then
+		unitActionWindow.Visible = false
+	end
+end
+
+local function setActionStatus(text: string)
+	if unitActionStatus then
+		unitActionStatus.Text = text
+	end
+end
+
+local function clearActionButtons()
+	if not unitActionList then
+		return
+	end
+
+	for _, child in unitActionList:GetChildren() do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+end
+
+local function handleUnitAction(actionId: string, actionText: string)
+	if actionId == "Move" then
+		movementMode = true
+		clearMovementHighlights()
+		showMovementForSelectedUnit()
+		setActionStatus("Выберите подсвеченную клетку")
+		return
+	end
+
+	if actionId == "FoundCity" then
+		movementMode = false
+		clearMovementHighlights()
+		setActionStatus("Сначала нужно добавить систему городов")
+		return
+	end
+
+	movementMode = false
+	clearMovementHighlights()
+
+	if selectedUnitId then
+		unitActionEvent:FireServer(selectedUnitId, actionId)
+	end
+
+	if actionId == "Delete" then
+		clearHighlights()
+		hideUnitActionWindow()
+		selectedUnitId = nil
+		selectedUnitModel = nil
+		return
+	end
+
+	setActionStatus(actionText)
+end
+
+local function createActionButton(actionId: string, text: string, order: number)
+	if not unitActionList then
+		return
+	end
+
+	local button = Instance.new("TextButton")
+	button.Name = actionId .. "Button"
+	button.AutoButtonColor = true
+	button.BackgroundColor3 = Color3.fromRGB(48, 55, 64)
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamSemibold
+	button.LayoutOrder = order
+	button.Size = UDim2.new(1, 0, 0, 29)
+	button.Text = text
+	button.TextColor3 = Color3.fromRGB(245, 247, 250)
+	button.TextSize = 13
+	button.Parent = unitActionList
+
+	button.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+
+	button.Activated:Connect(function()
+		handleUnitAction(actionId, text)
+	end)
+end
+
+local function showUnitActionWindow(model: Model)
+	ensureUnitActionGui()
+	clearActionButtons()
+
+	local unitType = model:GetAttribute("UnitType")
+	local unit = typeof(unitType) == "string" and UnitConfig.Types[unitType] or nil
+	local displayName = unit and unit.DisplayName or tostring(unitType or "Юнит")
+	local health = model:GetAttribute("Health")
+	local maxHealth = getUnitMaxHealth(model)
+
+	if unitActionTitle then
+		unitActionTitle.Text = displayName
+	end
+
+	if typeof(health) == "number" then
+		setActionStatus(string.format("HP %d/%d", math.max(0, math.floor(health + 0.5)), math.floor(maxHealth + 0.5)))
+	else
+		setActionStatus("Выберите действие")
+	end
+
+	local order = 0
+	for _, action in ACTION_BUTTONS do
+		if not action.SettlerOnly or unitType == "Settler" then
+			order += 1
+			createActionButton(action.Id, action.Text, order)
+		end
+	end
+
+	if unitActionWindow then
+		unitActionWindow.Visible = true
+	end
+end
+
+local function clearSelection()
+	clearHighlights()
+	hideUnitActionWindow()
+	selectedUnitId = nil
+	selectedUnitModel = nil
+end
+
 local function selectUnit(model: Model)
 	clearHighlights()
+	movementMode = true
 
 	selectedUnitModel = model
 	selectedUnitId = model:GetAttribute("UnitId") :: string
@@ -351,11 +580,12 @@ local function selectUnit(model: Model)
 	selectionHighlight.OutlineTransparency = 0
 	selectionHighlight.Parent = highlightFolder
 
+	showUnitActionWindow(model)
 	showMovementForSelectedUnit()
 end
 
 local function requestMove(tile: BasePart)
-	if not selectedUnitId or not canSelectedUnitEnter(tile) then
+	if not selectedUnitId or not movementMode or not canSelectedUnitEnter(tile) then
 		return
 	end
 
@@ -366,12 +596,15 @@ local function requestMove(tile: BasePart)
 	end
 
 	moveUnitEvent:FireServer(selectedUnitId, targetX, targetZ)
-	clearHighlights()
-	selectedUnitId = nil
-	selectedUnitModel = nil
+	clearSelection()
 end
 
 mouse.Button1Down:Connect(function()
+	if ignoreNextWorldClick then
+		ignoreNextWorldClick = false
+		return
+	end
+
 	local target = mouse.Target
 	local unitModel = findUnitModel(target)
 
@@ -382,13 +615,13 @@ mouse.Button1Down:Connect(function()
 
 	local tile = findTile(target)
 	if tile then
-		requestMove(tile)
+		if movementMode then
+			requestMove(tile)
+		end
 		return
 	end
 
-	clearHighlights()
-	selectedUnitId = nil
-	selectedUnitModel = nil
+	clearSelection()
 end)
 
 local unitsFolder = getUnitsFolder()
