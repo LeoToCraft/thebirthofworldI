@@ -475,7 +475,13 @@ local function handleUnitAction(actionId: string, actionText: string)
 	if actionId == "FoundCity" then
 		movementMode = false
 		clearMovementHighlights()
-		setActionStatus("Сначала нужно добавить систему городов")
+		if selectedUnitId then
+			unitActionEvent:FireServer(selectedUnitId, actionId)
+		end
+		clearHighlights()
+		hideUnitActionWindow()
+		selectedUnitId = nil
+		selectedUnitModel = nil
 		return
 	end
 

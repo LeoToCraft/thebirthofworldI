@@ -5,6 +5,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
+local CityService = require(script.Parent.CityService)
 local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
 local UnitConfig = require(ReplicatedStorage.Shared.UnitConfig)
 
@@ -584,7 +585,16 @@ local function onUnitAction(player: Player, unitId: string, actionId: string)
 	elseif actionId == "Delete" then
 		removeUnit(unitId, unitState)
 	elseif actionId == "FoundCity" then
-		setUnitActionState(unitState, "FoundCityPlanned", false, false)
+		if unitState.UnitType ~= "Settler" then
+			return
+		end
+
+		local cityModel = CityService.FoundCity(player, unitState.GridX, unitState.GridZ)
+		if cityModel then
+			removeUnit(unitId, unitState)
+		else
+			setUnitActionState(unitState, "FoundCityFailed", false, false)
+		end
 	end
 end
 
