@@ -6,6 +6,10 @@ CityConfig.Starting = {
 	Production = 0,
 }
 
+CityConfig.Economy = {
+	TickSeconds = 6,
+}
+
 CityConfig.Placement = {
 	MinDistanceFromOtherCities = 4,
 	AllowedBiomes = {
@@ -13,6 +17,10 @@ CityConfig.Placement = {
 		Sand = true,
 		Winter = true,
 	},
+}
+
+CityConfig.Territory = {
+	Radius = 5,
 }
 
 CityConfig.Visual = {

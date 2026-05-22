@@ -19,15 +19,20 @@ local UNIT_ACTION_EVENT_NAME = "UnitAction"
 local CREATE_UNIT_EVENT_NAME = "CreateUnit"
 local HEALTH_BAR_NAME = "UnitHealthBar"
 local IMPROVEMENTS_FOLDER_NAME = "Improvements"
+local BOT_ACTION_SECONDS = 1.5
 
 local unitsById = {}
 local occupiedTiles = {}
 local playerOrder = 0
 local botOwners = {
-	{ UserId = -101, Name = "Bot Rome" },
-	{ UserId = -102, Name = "Bot Egypt" },
-	{ UserId = -103, Name = "Bot Japan" },
+	{ UserId = -101, Name = "Bot Rome", CountryName = "Rome" },
+	{ UserId = -102, Name = "Bot Egypt", CountryName = "Egypt" },
+	{ UserId = -103, Name = "Bot Japan", CountryName = "Japan" },
+	{ UserId = -104, Name = "Bot Greece", CountryName = "Greece" },
+	{ UserId = -105, Name = "Bot Aztec", CountryName = "Aztec" },
+	{ UserId = -106, Name = "Bot Norway", CountryName = "Norway" },
 }
+local setUnitActionState
 
 local function getTileName(x: number, z: number): string
 	return string.format("Tile_%03d_%03d", x, z)
@@ -144,7 +149,7 @@ local function isOpenForUnit(unitType: string, x: number, z: number): boolean
 	return canUnitEnter(unitType, tile) and occupiedTiles[getTileKey(x, z)] == nil
 end
 
-local function setUnitAttributes(instance: Instance, unitId: string, player: Player, unitType: string, x: number, z: number)
+local function setUnitAttributes(instance: Instance, unitId: string, player: any, unitType: string, x: number, z: number)
 	instance:SetAttribute("UnitId", unitId)
 	instance:SetAttribute("OwnerUserId", player.UserId)
 	instance:SetAttribute("UnitType", unitType)
@@ -160,7 +165,7 @@ local function setUnitAttributes(instance: Instance, unitId: string, player: Pla
 	instance:SetAttribute("ActionState", "Ready")
 end
 
-local function applyUnitAttributesToParts(model: Model, unitId: string, player: Player, unitType: string, x: number, z: number)
+local function applyUnitAttributesToParts(model: Model, unitId: string, player: any, unitType: string, x: number, z: number)
 	for _, descendant in model:GetDescendants() do
 		if descendant:IsA("BasePart") then
 			descendant.Anchored = true
@@ -457,7 +462,7 @@ local function findSpawnTile(unitType: string, startX: number, startZ: number): 
 	return nil, nil
 end
 
-local function createUnit(player: Player, unitType: string, x: number, z: number): Model?
+local function createUnit(player: any, unitType: string, x: number, z: number): Model?
 	if not UnitConfig.Types[unitType] then
 		return nil
 	end
@@ -531,6 +536,13 @@ local function buildResourceImprovement(unitState)
 	tile:SetAttribute("ImprovedResource", true)
 	tile:SetAttribute("FoodYield", (tile:GetAttribute("FoodYield") or 0) + 1)
 	tile:SetAttribute("ProductionYield", (tile:GetAttribute("ProductionYield") or 0) + 1)
+	CityService.RefreshYieldsNear(unitState.OwnerUserId, unitState.GridX, unitState.GridZ)
+	CityService.AddTreasury(
+		unitState.OwnerUserId,
+		tile:GetAttribute("FoodYield") or 0,
+		tile:GetAttribute("ProductionYield") or 0,
+		tile:GetAttribute("GoldYield") or 0
+	)
 
 	local marker = Instance.new("Part")
 	marker.Name = "Improvement"
@@ -554,7 +566,7 @@ local function onCreateUnit(player: Player, cityId: string, unitType: string)
 		return
 	end
 
-	if unitType ~= "Builder" and unitType ~= "Archer" and unitType ~= "Scout" then
+	if unitType ~= "Warrior" and unitType ~= "Settler" and unitType ~= "Builder" and unitType ~= "Archer" and unitType ~= "Scout" then
 		return
 	end
 
@@ -619,7 +631,7 @@ local function healUnit(unitState, amount: number)
 	unitState.Model:SetAttribute("Health", nextHealth)
 end
 
-local function setUnitActionState(unitState, actionState: string, fortified: boolean, fortifyUntilHealed: boolean)
+function setUnitActionState(unitState, actionState: string, fortified: boolean, fortifyUntilHealed: boolean)
 	unitState.Model:SetAttribute("ActionState", actionState)
 	unitState.Model:SetAttribute("Fortified", fortified)
 	unitState.Model:SetAttribute("FortifyUntilHealed", fortifyUntilHealed)
@@ -717,18 +729,21 @@ local function spawnBotUnits()
 		{ X = 16, Z = 16 },
 		{ X = MapConfig.Map.Width - 16, Z = 18 },
 		{ X = 18, Z = MapConfig.Map.Length - 16 },
+		{ X = MapConfig.Map.Width - 18, Z = MapConfig.Map.Length - 18 },
+		{ X = math.floor(MapConfig.Map.Width / 2), Z = 14 },
+		{ X = math.floor(MapConfig.Map.Width / 2), Z = MapConfig.Map.Length - 14 },
 	}
 
 	for index, bot in botOwners do
 		local point = spawnPoints[index]
-		local scoutX, scoutZ = findSpawnTile("Scout", point.X, point.Z)
-		if scoutX and scoutZ then
-			createUnit(bot :: any, "Scout", scoutX, scoutZ)
+		local settlerX, settlerZ = findSpawnTile("Settler", point.X, point.Z)
+		if settlerX and settlerZ then
+			createUnit(bot :: any, "Settler", settlerX, settlerZ)
 		end
 
-		local archerX, archerZ = findSpawnTile("Archer", point.X + 2, point.Z)
-		if archerX and archerZ then
-			createUnit(bot :: any, "Archer", archerX, archerZ)
+		local warriorX, warriorZ = findSpawnTile("Warrior", point.X + 2, point.Z)
+		if warriorX and warriorZ then
+			createUnit(bot :: any, "Warrior", warriorX, warriorZ)
 		end
 	end
 end
@@ -737,10 +752,28 @@ local function moveBotUnits()
 	local random = Random.new()
 
 	while true do
-		task.wait(4)
+		task.wait(BOT_ACTION_SECONDS)
 
 		for unitId, unitState in unitsById do
 			if unitState.OwnerUserId < 0 and not unitState.IsMoving then
+				if unitState.UnitType == "Settler" then
+					local botOwner
+					for _, owner in botOwners do
+						if owner.UserId == unitState.OwnerUserId then
+							botOwner = owner
+							break
+						end
+					end
+
+					if botOwner then
+						local cityModel = CityService.FoundCity(botOwner :: any, unitState.GridX, unitState.GridZ, botOwner.CountryName .. " City")
+						if cityModel then
+							removeUnit(unitId, unitState)
+							continue
+						end
+					end
+				end
+
 				local unit = UnitConfig.Types[unitState.UnitType]
 				local directions = {
 					{ X = 1, Z = 0 },

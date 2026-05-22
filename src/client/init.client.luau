@@ -3,6 +3,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
+local CityConfig = require(ReplicatedStorage.Shared.CityConfig)
 local UnitConfig = require(ReplicatedStorage.Shared.UnitConfig)
 
 local localPlayer = Players.LocalPlayer
@@ -38,6 +39,7 @@ local hudCountryLabel: TextLabel? = nil
 local hudContextTitle: TextLabel? = nil
 local hudContextSubtitle: TextLabel? = nil
 local hudContextStats: TextLabel? = nil
+local hudResourceLabels: { [string]: TextLabel } = {}
 local worldMapGrid: Frame? = nil
 local worldMapTerritories: Frame? = nil
 local worldMapMarkers: Frame? = nil
@@ -60,7 +62,7 @@ local WORLD_MAP_SIZE = UDim2.fromOffset(
 	MapConfig.Map.Length * WORLD_MAP_TILE_SIZE
 )
 local WORLD_MAP_EXPECTED_TILES = MapConfig.Map.Width * MapConfig.Map.Length
-local COUNTRY_TERRITORY_RADIUS = 5
+local COUNTRY_TERRITORY_RADIUS = CityConfig.Territory.Radius
 local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "BuildImprovement", Text = "Улучшить ресурс", BuilderOnly = true },
@@ -460,7 +462,7 @@ local function createHudButton(parent: Instance, text: string, size: UDim2): Tex
 	return button
 end
 
-local function createResourceChip(parent: Instance, text: string)
+local function createResourceChip(parent: Instance, text: string): TextLabel
 	local chip = Instance.new("Frame")
 	chip.BackgroundColor3 = Color3.fromRGB(25, 30, 37)
 	chip.BorderSizePixel = 0
@@ -470,6 +472,8 @@ local function createResourceChip(parent: Instance, text: string)
 
 	local label = createHudLabel(chip, text, UDim2.fromScale(1, 1), 12, true)
 	label.TextXAlignment = Enum.TextXAlignment.Center
+
+	return label
 end
 
 local function getBiomeColor(biome: any): Color3
@@ -748,6 +752,41 @@ local function updateGameHudCountry()
 	end
 end
 
+local function getPlayerNumberAttribute(attributeName: string): number
+	local value = localPlayer:GetAttribute(attributeName)
+	if typeof(value) == "number" then
+		return value
+	end
+
+	return 0
+end
+
+local function updateGameHudResources()
+	if hudResourceLabels.Science then
+		hudResourceLabels.Science.Text = string.format("Наука %d", getPlayerNumberAttribute("TreasuryScience"))
+	end
+
+	if hudResourceLabels.Culture then
+		hudResourceLabels.Culture.Text = string.format("Культура %d", getPlayerNumberAttribute("TreasuryCulture"))
+	end
+
+	if hudResourceLabels.Gold then
+		hudResourceLabels.Gold.Text = string.format("Золото %d", getPlayerNumberAttribute("TreasuryGold"))
+	end
+
+	if hudResourceLabels.Faith then
+		hudResourceLabels.Faith.Text = string.format("Вера %d", getPlayerNumberAttribute("TreasuryFaith"))
+	end
+
+	if hudResourceLabels.Food then
+		hudResourceLabels.Food.Text = string.format("Пища %d", getPlayerNumberAttribute("TreasuryFood"))
+	end
+
+	if hudResourceLabels.Production then
+		hudResourceLabels.Production.Text = string.format("Произв. %d", getPlayerNumberAttribute("TreasuryProduction"))
+	end
+end
+
 local function setHudContext(title: string, subtitle: string, stats: string)
 	if hudContextTitle then
 		hudContextTitle.Text = title
@@ -844,7 +883,7 @@ local function ensureCityProductionGui()
 	window.BackgroundTransparency = 0.03
 	window.BorderSizePixel = 0
 	window.Position = UDim2.new(0.5, 0, 1, -18)
-	window.Size = UDim2.fromOffset(260, 150)
+	window.Size = UDim2.fromOffset(260, 216)
 	window.Visible = false
 	window.Parent = gui
 	addPadding(window, 12)
@@ -864,9 +903,11 @@ local function ensureCityProductionGui()
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Parent = list
 
-	createProductionButton(list, "Создать строителя", "Builder", 1)
-	createProductionButton(list, "Создать лучника", "Archer", 2)
-	createProductionButton(list, "Создать разведчика", "Scout", 3)
+	createProductionButton(list, "Создать поселенца", "Settler", 1)
+	createProductionButton(list, "Создать воина", "Warrior", 2)
+	createProductionButton(list, "Создать строителя", "Builder", 3)
+	createProductionButton(list, "Создать лучника", "Archer", 4)
+	createProductionButton(list, "Создать разведчика", "Scout", 5)
 
 	cityProductionGui = gui
 	cityProductionWindow = window
@@ -919,12 +960,12 @@ local function ensureGameHud()
 	resourceLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	resourceLayout.Parent = resources
 
-	createResourceChip(resources, "Наука 0")
-	createResourceChip(resources, "Культура 0")
-	createResourceChip(resources, "Золото 0")
-	createResourceChip(resources, "Вера 0")
-	createResourceChip(resources, "Пища 0")
-	createResourceChip(resources, "Произв. 0")
+	hudResourceLabels.Science = createResourceChip(resources, "Наука 0")
+	hudResourceLabels.Culture = createResourceChip(resources, "Культура 0")
+	hudResourceLabels.Gold = createResourceChip(resources, "Золото 0")
+	hudResourceLabels.Faith = createResourceChip(resources, "Вера 0")
+	hudResourceLabels.Food = createResourceChip(resources, "Пища 0")
+	hudResourceLabels.Production = createResourceChip(resources, "Произв. 0")
 
 	local era = createHudLabel(topBar, "Древний мир", UDim2.fromOffset(136, 46), 13, true)
 	era.AnchorPoint = Vector2.new(1, 0)
@@ -1003,6 +1044,7 @@ local function ensureGameHud()
 
 	gameHudGui = gui
 	updateGameHudCountry()
+	updateGameHudResources()
 	createWorldMapTiles(worldMapGrid)
 	updateWorldMap()
 	startWorldMapUpdates()
@@ -1608,6 +1650,17 @@ localPlayer:GetAttributeChangedSignal("CountryName"):Connect(function()
 		hideCountryMenu()
 	end
 end)
+
+for _, attributeName in {
+	"TreasuryScience",
+	"TreasuryCulture",
+	"TreasuryGold",
+	"TreasuryFaith",
+	"TreasuryFood",
+	"TreasuryProduction",
+} do
+	localPlayer:GetAttributeChangedSignal(attributeName):Connect(updateGameHudResources)
+end
 
 ensureGameHud()
 showCountryMenu()

@@ -1,4 +1,5 @@
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 local Workspace = game:GetService("Workspace")
@@ -10,12 +11,14 @@ local CityService = {}
 
 local MAP_FOLDER_NAME = "GeneratedMap"
 local CITIES_FOLDER_NAME = "Cities"
+local TERRITORY_FOLDER_NAME = "CityBorders"
 local REMOTES_FOLDER_NAME = "Remotes"
 local CREATE_COUNTRY_EVENT_NAME = "CreateCountry"
 local COUNTRY_NAME_ATTRIBUTE = "CountryName"
 
 local citiesById = {}
 local cityCountByOwner = {}
+local treasuryByOwner: { [number]: { Food: number, Production: number, Gold: number } } = {}
 
 local function getTileName(x: number, z: number): string
 	return string.format("Tile_%03d_%03d", x, z)
@@ -36,6 +39,19 @@ local function getCitiesFolder(): Folder
 	newCitiesFolder.Parent = Workspace
 
 	return newCitiesFolder
+end
+
+local function getTerritoryFolder(): Folder
+	local territoryFolder = Workspace:FindFirstChild(TERRITORY_FOLDER_NAME)
+	if territoryFolder then
+		return territoryFolder :: Folder
+	end
+
+	local newTerritoryFolder = Instance.new("Folder")
+	newTerritoryFolder.Name = TERRITORY_FOLDER_NAME
+	newTerritoryFolder.Parent = Workspace
+
+	return newTerritoryFolder
 end
 
 local function getOrCreateCreateCountryEvent(): RemoteEvent
@@ -93,14 +109,14 @@ local function isFarEnoughFromCities(x: number, z: number): boolean
 	return true
 end
 
-local function getNextCityName(player: Player): string
+local function getNextCityName(player: any): string
 	local nextIndex = (cityCountByOwner[player.UserId] or 0) + 1
 	cityCountByOwner[player.UserId] = nextIndex
 
 	return string.format("%s City %d", player.Name, nextIndex)
 end
 
-local function getCityName(player: Player, requestedCityName: string?): string
+local function getCityName(player: any, requestedCityName: string?): string
 	if typeof(requestedCityName) == "string" then
 		local trimmed = requestedCityName:gsub("^%s+", ""):gsub("%s+$", "")
 		if trimmed ~= "" then
@@ -122,8 +138,12 @@ local function sanitizeName(name: any, fallback: string, maxLength: number): str
 	return fallback
 end
 
-local function getCountryName(player: Player): string
-	return sanitizeName(player:GetAttribute(COUNTRY_NAME_ATTRIBUTE), player.Name, 32)
+local function getCountryName(player: any): string
+	if typeof(player) == "Instance" and player:IsA("Player") then
+		return sanitizeName(player:GetAttribute(COUNTRY_NAME_ATTRIBUTE), player.Name, 32)
+	end
+
+	return sanitizeName(player.CountryName, player.Name or "Bot", 32)
 end
 
 local function getFirstBasePart(instance: Instance): BasePart?
@@ -278,13 +298,14 @@ local function createCityVisual(cityName: string, tile: BasePart): Model
 	return model
 end
 
-local function setCityAttributes(model: Model, cityId: string, player: Player, cityName: string, countryName: string, x: number, z: number)
+local function setCityAttributes(model: Model, cityId: string, player: any, cityName: string, countryName: string, x: number, z: number)
 	model:SetAttribute("CityId", cityId)
 	model:SetAttribute("OwnerUserId", player.UserId)
 	model:SetAttribute("CityName", cityName)
 	model:SetAttribute("CountryName", countryName)
 	model:SetAttribute("GridX", x)
 	model:SetAttribute("GridZ", z)
+	model:SetAttribute("TerritoryRadius", CityConfig.Territory.Radius)
 	model:SetAttribute("Population", CityConfig.Starting.Population)
 	model:SetAttribute("Food", CityConfig.Starting.Food)
 	model:SetAttribute("Production", CityConfig.Starting.Production)
@@ -319,6 +340,152 @@ local function setCityYieldAttributes(model: Model, tile: BasePart)
 	model:SetAttribute("GoldPerTurn", gold)
 end
 
+local function getCountryColor(userId: number): Color3
+	local hue = ((userId * 37) % 360) / 360
+	return Color3.fromHSV(hue, 0.58, 0.95)
+end
+
+local function isTerritoryEdge(centerX: number, centerZ: number, x: number, z: number): boolean
+	local radius = CityConfig.Territory.Radius
+	local distance = math.abs(x - centerX) + math.abs(z - centerZ)
+
+	return distance == radius
+end
+
+local function createTerritoryMarker(cityId: string, ownerUserId: number, centerX: number, centerZ: number)
+	local parent = getTerritoryFolder()
+	local existing = parent:FindFirstChild(cityId)
+	if existing then
+		existing:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = cityId
+	folder:SetAttribute("OwnerUserId", ownerUserId)
+	folder:SetAttribute("GridX", centerX)
+	folder:SetAttribute("GridZ", centerZ)
+	folder.Parent = parent
+
+	local color = getCountryColor(ownerUserId)
+	local radius = CityConfig.Territory.Radius
+	for x = centerX - radius, centerX + radius do
+		for z = centerZ - radius, centerZ + radius do
+			if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length and isTerritoryEdge(centerX, centerZ, x, z) then
+				local tile = getTile(x, z)
+				if tile then
+					local marker = Instance.new("Part")
+					marker.Name = "Border"
+					marker.Anchored = true
+					marker.CanCollide = false
+					marker.CanQuery = false
+					marker.Color = color
+					marker.Material = Enum.Material.Neon
+					marker.Size = Vector3.new(MapConfig.Tile.Width, 0.06, MapConfig.Tile.Length)
+					marker.Transparency = 0.52
+					marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.16, tile.Position.Z)
+					marker:SetAttribute("CityId", cityId)
+					marker:SetAttribute("OwnerUserId", ownerUserId)
+					marker:SetAttribute("GridX", x)
+					marker:SetAttribute("GridZ", z)
+					marker.Parent = folder
+				end
+			end
+		end
+	end
+end
+
+local function getOwnerTreasury(ownerUserId: number)
+	if not treasuryByOwner[ownerUserId] then
+		treasuryByOwner[ownerUserId] = {
+			Food = 0,
+			Production = 0,
+			Gold = 0,
+		}
+	end
+
+	return treasuryByOwner[ownerUserId]
+end
+
+local function syncPlayerTreasury(player: Player)
+	local treasury = getOwnerTreasury(player.UserId)
+	player:SetAttribute("TreasuryFood", treasury.Food)
+	player:SetAttribute("TreasuryProduction", treasury.Production)
+	player:SetAttribute("TreasuryGold", treasury.Gold)
+	player:SetAttribute("TreasuryScience", player:GetAttribute("TreasuryScience") or 0)
+	player:SetAttribute("TreasuryCulture", player:GetAttribute("TreasuryCulture") or 0)
+	player:SetAttribute("TreasuryFaith", player:GetAttribute("TreasuryFaith") or 0)
+end
+
+local function addTreasury(ownerUserId: number, food: number, production: number, gold: number)
+	local treasury = getOwnerTreasury(ownerUserId)
+	treasury.Food += food
+	treasury.Production += production
+	treasury.Gold += gold
+
+	local player = Players:GetPlayerByUserId(ownerUserId)
+	if player then
+		syncPlayerTreasury(player)
+	end
+end
+
+local function calculateCityYields(centerX: number, centerZ: number): (number, number, number)
+	local food = 0
+	local production = 0
+	local gold = 0
+	local radius = CityConfig.Territory.Radius
+
+	for x = centerX - radius, centerX + radius do
+		for z = centerZ - radius, centerZ + radius do
+			local distance = math.abs(x - centerX) + math.abs(z - centerZ)
+			if distance <= radius then
+				local tile = getTile(x, z)
+				if tile and (tile:GetAttribute("HasCity") == true or tile:GetAttribute("ImprovedResource") == true) then
+					food += getNumberAttribute(tile, "FoodYield")
+					production += getNumberAttribute(tile, "ProductionYield")
+					gold += getNumberAttribute(tile, "GoldYield")
+				end
+			end
+		end
+	end
+
+	return food, production, gold
+end
+
+local function setCityYields(cityState, food: number, production: number, gold: number)
+	cityState.FoodPerTurn = food
+	cityState.ProductionPerTurn = production
+	cityState.GoldPerTurn = gold
+
+	if cityState.Model then
+		cityState.Model:SetAttribute("FoodPerTurn", food)
+		cityState.Model:SetAttribute("ProductionPerTurn", production)
+		cityState.Model:SetAttribute("GoldPerTurn", gold)
+	end
+end
+
+local function refreshCityYields(cityId: string)
+	local cityState = citiesById[cityId]
+	if not cityState then
+		return
+	end
+
+	local food, production, gold = calculateCityYields(cityState.GridX, cityState.GridZ)
+	setCityYields(cityState, food, production, gold)
+end
+
+local function startEconomyLoop()
+	task.spawn(function()
+		while true do
+			task.wait(CityConfig.Economy.TickSeconds)
+
+			for cityId, cityState in citiesById do
+				refreshCityYields(cityId)
+				addTreasury(cityState.OwnerUserId, cityState.FoodPerTurn or 0, cityState.ProductionPerTurn or 0, cityState.GoldPerTurn or 0)
+			end
+		end
+	end)
+end
+
 local function onCreateCountry(player: Player, requestedCountryName: string)
 	local countryName = sanitizeName(requestedCountryName, player.Name, 32)
 	player:SetAttribute(COUNTRY_NAME_ATTRIBUTE, countryName)
@@ -345,7 +512,7 @@ function CityService.CanFoundCity(x: number, z: number): (boolean, string?)
 	return true, nil
 end
 
-function CityService.FoundCity(player: Player, x: number, z: number, requestedCityName: string?): (Model?, string?)
+function CityService.FoundCity(player: any, x: number, z: number, requestedCityName: string?): (Model?, string?)
 	local canFound, reason = CityService.CanFoundCity(x, z)
 	if not canFound then
 		return nil, reason
@@ -380,6 +547,8 @@ function CityService.FoundCity(player: Player, x: number, z: number, requestedCi
 		ProductionPerTurn = cityModel:GetAttribute("ProductionPerTurn"),
 		GoldPerTurn = cityModel:GetAttribute("GoldPerTurn"),
 	}
+	refreshCityYields(cityId)
+	createTerritoryMarker(cityId, player.UserId, x, z)
 
 	return cityModel, nil
 end
@@ -392,9 +561,32 @@ function CityService.GetCities()
 	return citiesById
 end
 
+function CityService.RefreshYieldsNear(ownerUserId: number, x: number, z: number)
+	for cityId, cityState in citiesById do
+		if cityState.OwnerUserId == ownerUserId then
+			local distance = math.abs(x - cityState.GridX) + math.abs(z - cityState.GridZ)
+			if distance <= CityConfig.Territory.Radius then
+				refreshCityYields(cityId)
+			end
+		end
+	end
+end
+
+function CityService.AddTreasury(ownerUserId: number, food: number, production: number, gold: number)
+	addTreasury(ownerUserId, food, production, gold)
+end
+
 function CityService.Start()
 	getCitiesFolder()
+	getTerritoryFolder()
 	getOrCreateCreateCountryEvent().OnServerEvent:Connect(onCreateCountry)
+
+	Players.PlayerAdded:Connect(syncPlayerTreasury)
+	for _, player in Players:GetPlayers() do
+		syncPlayerTreasury(player)
+	end
+
+	startEconomyLoop()
 end
 
 return CityService
