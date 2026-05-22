@@ -1,5 +1,9 @@
 local UnitConfig = {}
 
+UnitConfig.Animation = {
+	MoveTime = 0.35,
+}
+
 UnitConfig.Types = {
 	Warrior = {
 		DisplayName = "Warrior",

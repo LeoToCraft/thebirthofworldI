@@ -4,6 +4,7 @@ MapConfig.Tile = {
 	Width = 3,
 	Length = 3,
 	Height = 0.8,
+	WaterHeight = 0.35,
 }
 
 MapConfig.Map = {

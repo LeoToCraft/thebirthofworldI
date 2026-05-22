@@ -2,6 +2,7 @@ local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
@@ -99,9 +100,11 @@ local function setUnitAttributes(instance: Instance, unitId: string, player: Pla
 	instance:SetAttribute("UnitType", unitType)
 	instance:SetAttribute("GridX", x)
 	instance:SetAttribute("GridZ", z)
+	instance:SetAttribute("MaxHealth", UnitConfig.Types[unitType].Health)
 	instance:SetAttribute("Health", UnitConfig.Types[unitType].Health)
 	instance:SetAttribute("Movement", UnitConfig.Types[unitType].Movement)
 	instance:SetAttribute("Attack", UnitConfig.Types[unitType].Attack)
+	instance:SetAttribute("IsMoving", false)
 end
 
 local function applyUnitAttributesToParts(model: Model, unitId: string, player: Player, unitType: string, x: number, z: number)
@@ -216,12 +219,47 @@ local function createModel(unitType: string): Model
 	return createFallbackModel(unitType)
 end
 
-local function moveModelToTile(model: Model, tile: BasePart)
+local function getModelTileCFrame(model: Model, tile: BasePart): CFrame
 	local _, size = model:GetBoundingBox()
 	local topY = tile.Position.Y + tile.Size.Y / 2
 	local position = Vector3.new(tile.Position.X, topY + size.Y / 2 + 0.05, tile.Position.Z)
 
-	model:PivotTo(CFrame.new(position))
+	return CFrame.new(position)
+end
+
+local function moveModelToTile(model: Model, tile: BasePart)
+	model:PivotTo(getModelTileCFrame(model, tile))
+end
+
+local function tweenModelToTile(model: Model, tile: BasePart, onComplete: () -> ())
+	local targetCFrame = getModelTileCFrame(model, tile)
+	local pivotValue = Instance.new("CFrameValue")
+	pivotValue.Value = model:GetPivot()
+
+	local connection = pivotValue:GetPropertyChangedSignal("Value"):Connect(function()
+		if model.Parent then
+			model:PivotTo(pivotValue.Value)
+		end
+	end)
+
+	local tween = TweenService:Create(
+		pivotValue,
+		TweenInfo.new(UnitConfig.Animation.MoveTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Value = targetCFrame }
+	)
+
+	tween.Completed:Connect(function()
+		connection:Disconnect()
+		pivotValue:Destroy()
+
+		if model.Parent then
+			model:PivotTo(targetCFrame)
+		end
+
+		onComplete()
+	end)
+
+	tween:Play()
 end
 
 local function findSpawnTile(unitType: string, startX: number, startZ: number): (number?, number?)
@@ -262,6 +300,7 @@ local function createUnit(player: Player, unitType: string, x: number, z: number
 		UnitType = unitType,
 		GridX = x,
 		GridZ = z,
+		IsMoving = false,
 	}
 	occupiedTiles[getTileKey(x, z)] = unitId
 
@@ -310,6 +349,10 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 		return
 	end
 
+	if unitState.IsMoving then
+		return
+	end
+
 	local unit = UnitConfig.Types[unitState.UnitType]
 	local distance = math.abs(targetX - unitState.GridX) + math.abs(targetZ - unitState.GridZ)
 	if distance < 1 or distance > unit.Movement then
@@ -331,8 +374,15 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 
 	unitState.GridX = targetX
 	unitState.GridZ = targetZ
+	unitState.IsMoving = true
+	unitState.Model:SetAttribute("IsMoving", true)
 	setUnitGridAttributes(unitState.Model, targetX, targetZ)
-	moveModelToTile(unitState.Model, tile)
+	tweenModelToTile(unitState.Model, tile, function()
+		if unitsById[unitId] == unitState then
+			unitState.IsMoving = false
+			unitState.Model:SetAttribute("IsMoving", false)
+		end
+	end)
 end
 
 function UnitService.Start()

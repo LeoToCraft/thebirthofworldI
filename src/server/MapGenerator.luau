@@ -40,7 +40,7 @@ local function chooseTile(x: number, z: number): (string, number)
 	local temperature = layeredNoise(x, z, -180) - latitudeColdness * 0.85
 
 	if elevation < -0.24 then
-		return "Water", MapConfig.Tile.Height
+		return "Water", MapConfig.Tile.WaterHeight
 	end
 
 	if elevation > 0.46 and mountainShape > 0.1 then
