@@ -11,55 +11,81 @@ local function scaledNoise(x: number, z: number, scale: number, seedOffset: numb
 	return math.noise((x + seedOffset) / scale, (z - seedOffset) / scale, MapConfig.Map.Seed)
 end
 
-local function chooseBiome(x: number, z: number): string
-	local elevation = scaledNoise(x, z, 10, 0)
-	local moisture = scaledNoise(x, z, 7, 80)
-	local temperature = scaledNoise(x, z, 13, -150)
+local function layeredNoise(x: number, z: number, seedOffset: number): number
+	local broad = scaledNoise(x, z, 32, seedOffset)
+	local medium = scaledNoise(x, z, 14, seedOffset + 90) * 0.55
+	local detail = scaledNoise(x, z, 6, seedOffset - 140) * 0.25
 
-	if elevation < -0.22 then
-		return "Water"
-	end
-
-	if temperature < -0.3 then
-		return "Winter"
-	end
-
-	if moisture > 0.32 and temperature > -0.05 then
-		return "Tropics"
-	end
-
-	if moisture < -0.25 or elevation < -0.06 then
-		return "Sand"
-	end
-
-	return "Earth"
+	return broad + medium + detail
 end
 
-local function getTilePosition(x: number, z: number): Vector3
+local function getLatitudeColdness(z: number): number
+	local mapCenterZ = (MapConfig.Map.Length + 1) / 2
+	return math.abs(z - mapCenterZ) / mapCenterZ
+end
+
+local function getMountainHeight(elevation: number, mountainShape: number): number
+	local mountain = MapConfig.Biomes.Mountain
+	local heightRange = mountain.MaxHeight - mountain.MinHeight
+	local strength = math.clamp((elevation + mountainShape - 0.9) / 0.75, 0, 1)
+
+	return mountain.MinHeight + math.floor(strength * heightRange + 0.5)
+end
+
+local function chooseTile(x: number, z: number): (string, number)
+	local elevation = layeredNoise(x, z, 0)
+	local moisture = layeredNoise(x, z, 220)
+	local mountainShape = scaledNoise(x, z, 11, -360)
+	local latitudeColdness = getLatitudeColdness(z)
+	local temperature = layeredNoise(x, z, -180) - latitudeColdness * 0.85
+
+	if elevation < -0.24 then
+		return "Water", MapConfig.Tile.Height
+	end
+
+	if elevation > 0.46 and mountainShape > 0.1 then
+		return "Mountain", getMountainHeight(elevation, mountainShape)
+	end
+
+	if temperature < -0.28 then
+		return "Winter", MapConfig.Tile.Height
+	end
+
+	if moisture < -0.38 then
+		return "Sand", MapConfig.Tile.Height
+	end
+
+	return "Grass", MapConfig.Tile.Height
+end
+
+local function getTilePosition(x: number, z: number, height: number): Vector3
 	local tile = MapConfig.Tile
 	local map = MapConfig.Map
 	local offsetX = (x - (map.Width + 1) / 2) * tile.Width
 	local offsetZ = (z - (map.Length + 1) / 2) * tile.Length
 
-	return map.Origin + Vector3.new(offsetX, tile.Height / 2, offsetZ)
+	return map.Origin + Vector3.new(offsetX, height / 2, offsetZ)
 end
 
-local function createTile(parent: Instance, x: number, z: number, biomeName: string): Part
+local function createTile(parent: Instance, x: number, z: number, biomeName: string, height: number): Part
 	local tileConfig = MapConfig.Tile
 	local biome = MapConfig.Biomes[biomeName]
 
 	local tile = Instance.new("Part")
 	tile.Name = string.format("%s_%02d_%02d", biomeName, x, z)
 	tile.Anchored = true
-	tile.Size = Vector3.new(tileConfig.Width, tileConfig.Height, tileConfig.Length)
-	tile.Position = getTilePosition(x, z)
+	tile.Size = Vector3.new(tileConfig.Width, height, tileConfig.Length)
+	tile.Position = getTilePosition(x, z, height)
 	tile.Color = biome.Color
 	tile.Material = biome.Material
+	tile.Transparency = biome.Transparency or 0
+	tile.Reflectance = biome.Reflectance or 0
 	tile.TopSurface = Enum.SurfaceType.Smooth
 	tile.BottomSurface = Enum.SurfaceType.Smooth
 	tile:SetAttribute("GridX", x)
 	tile:SetAttribute("GridZ", z)
 	tile:SetAttribute("Biome", biome.DisplayName)
+	tile:SetAttribute("Height", height)
 	tile.Parent = parent
 
 	return tile
@@ -77,8 +103,8 @@ function MapGenerator.Generate()
 
 	for x = 1, MapConfig.Map.Width do
 		for z = 1, MapConfig.Map.Length do
-			local biomeName = chooseBiome(x, z)
-			createTile(mapFolder, x, z, biomeName)
+			local biomeName, height = chooseTile(x, z)
+			createTile(mapFolder, x, z, biomeName, height)
 		end
 	end
 

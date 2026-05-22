@@ -7,8 +7,8 @@ MapConfig.Tile = {
 }
 
 MapConfig.Map = {
-	Width = 40,
-	Length = 40,
+	Width = 120,
+	Length = 120,
 	Seed = 1846,
 	Origin = Vector3.new(0, 0, 0),
 }
@@ -16,28 +16,32 @@ MapConfig.Map = {
 MapConfig.Biomes = {
 	Water = {
 		DisplayName = "Water",
-		Color = Color3.fromRGB(43, 117, 189),
-		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(36, 122, 202),
+		Material = Enum.Material.Glass,
+		Transparency = 0.35,
+		Reflectance = 0.15,
 	},
 	Sand = {
 		DisplayName = "Sand",
 		Color = Color3.fromRGB(221, 194, 120),
 		Material = Enum.Material.Sand,
 	},
-	Earth = {
-		DisplayName = "Earth",
-		Color = Color3.fromRGB(107, 86, 58),
-		Material = Enum.Material.Ground,
-	},
-	Tropics = {
-		DisplayName = "Tropics",
-		Color = Color3.fromRGB(45, 145, 72),
+	Grass = {
+		DisplayName = "Grass",
+		Color = Color3.fromRGB(70, 150, 72),
 		Material = Enum.Material.Grass,
 	},
 	Winter = {
 		DisplayName = "Winter",
 		Color = Color3.fromRGB(226, 238, 242),
 		Material = Enum.Material.Snow,
+	},
+	Mountain = {
+		DisplayName = "Mountain",
+		Color = Color3.fromRGB(104, 105, 99),
+		Material = Enum.Material.Rock,
+		MinHeight = 1,
+		MaxHeight = 5,
 	},
 }
 
