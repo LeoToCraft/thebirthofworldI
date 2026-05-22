@@ -14,12 +14,14 @@ local moveUnitEvent = remotesFolder:WaitForChild("MoveUnit") :: RemoteEvent
 local unitActionEvent = remotesFolder:WaitForChild("UnitAction") :: RemoteEvent
 local createCountryEvent = remotesFolder:WaitForChild("CreateCountry") :: RemoteEvent
 local createUnitEvent = remotesFolder:WaitForChild("CreateUnit") :: RemoteEvent
+local diplomacyActionEvent = remotesFolder:WaitForChild("DiplomacyAction") :: RemoteEvent
 
 local selectedUnitId: string? = nil
 local selectedUnitModel: Model? = nil
 local selectedCityModel: Model? = nil
 local selectionHighlight: Highlight? = nil
 local movementMode = false
+local attackMode = false
 local ignoreNextWorldClick = false
 local healthBarConnections: { [Model]: { RBXScriptConnection } } = {}
 local unitActionGui: ScreenGui? = nil
@@ -34,6 +36,10 @@ local countryMenuGui: ScreenGui? = nil
 local countryNameInput: TextBox? = nil
 local cityProductionGui: ScreenGui? = nil
 local cityProductionWindow: Frame? = nil
+local cityProductionStatus: TextLabel? = nil
+local diplomacyGui: ScreenGui? = nil
+local diplomacyWindow: Frame? = nil
+local diplomacyList: Frame? = nil
 local gameHudGui: ScreenGui? = nil
 local hudCountryLabel: TextLabel? = nil
 local hudContextTitle: TextLabel? = nil
@@ -66,6 +72,7 @@ local COUNTRY_TERRITORY_RADIUS = CityConfig.Territory.Radius
 local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "BuildImprovement", Text = "Улучшить ресурс", BuilderOnly = true },
+	{ Id = "Attack", Text = "Атаковать", AttackOnly = true },
 	{ Id = "Move", Text = "Переместить" },
 	{ Id = "Rest", Text = "Отдых" },
 	{ Id = "Fortify", Text = "Укрепиться" },
@@ -342,7 +349,7 @@ end
 
 local function clearMovementHighlights()
 	for _, child in highlightFolder:GetChildren() do
-		if child.Name == "MoveHighlight" then
+		if child.Name == "MoveHighlight" or child.Name == "AttackHighlight" then
 			child:Destroy()
 		end
 	end
@@ -385,6 +392,20 @@ local function createMovementHighlight(tile: BasePart)
 	highlight.Parent = highlightFolder
 end
 
+local function createAttackHighlight(tile: BasePart)
+	local highlight = Instance.new("Part")
+	highlight.Name = "AttackHighlight"
+	highlight.Anchored = true
+	highlight.CanCollide = false
+	highlight.CanQuery = false
+	highlight.Color = Color3.fromRGB(231, 74, 62)
+	highlight.Material = Enum.Material.Neon
+	highlight.Size = Vector3.new(MapConfig.Tile.Width, 0.09, MapConfig.Tile.Length)
+	highlight.Transparency = 0.42
+	highlight.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.12, tile.Position.Z)
+	highlight.Parent = highlightFolder
+end
+
 local function showMovementForSelectedUnit()
 	if not selectedUnitModel then
 		return
@@ -409,6 +430,44 @@ local function showMovementForSelectedUnit()
 				local tile = getTile(x, z)
 				if tile and canSelectedUnitEnter(tile) and not isTileOccupied(x, z) then
 					createMovementHighlight(tile)
+				end
+			end
+		end
+	end
+end
+
+local function showAttackTargetsForSelectedUnit()
+	if not selectedUnitModel then
+		return
+	end
+
+	local unitType = selectedUnitModel:GetAttribute("UnitType")
+	local unit = typeof(unitType) == "string" and UnitConfig.Types[unitType] or nil
+	if not unit or unit.Attack <= 0 then
+		return
+	end
+
+	local originX = selectedUnitModel:GetAttribute("GridX")
+	local originZ = selectedUnitModel:GetAttribute("GridZ")
+	if typeof(originX) ~= "number" or typeof(originZ) ~= "number" then
+		return
+	end
+
+	local range = unit.Range or 1
+	local unitsFolder = getUnitsFolder()
+	if not unitsFolder then
+		return
+	end
+
+	for _, enemy in unitsFolder:GetChildren() do
+		if enemy:IsA("Model") and enemy:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+			local x = enemy:GetAttribute("GridX")
+			local z = enemy:GetAttribute("GridZ")
+			if typeof(x) == "number" and typeof(z) == "number" then
+				local distance = math.abs(x - originX) + math.abs(z - originZ)
+				local tile = getTile(x, z)
+				if distance >= 1 and distance <= range and tile then
+					createAttackHighlight(tile)
 				end
 			end
 		end
@@ -532,6 +591,23 @@ local function getCountryColor(userId: number): Color3
 	return Color3.fromHSV(hue, 0.58, 0.95)
 end
 
+local function getRelationAttributeName(otherUserId: number): string
+	if otherUserId < 0 then
+		return "Relation_n" .. tostring(math.abs(otherUserId))
+	end
+
+	return "Relation_p" .. tostring(otherUserId)
+end
+
+local function getRelationTo(ownerUserId: number): string
+	local relation = localPlayer:GetAttribute(getRelationAttributeName(ownerUserId))
+	if typeof(relation) == "string" then
+		return relation
+	end
+
+	return "Peace"
+end
+
 local function getCityModels(): { Model }
 	local cities = {}
 	local citiesFolder = getCitiesFolder()
@@ -626,7 +702,7 @@ local function updateWorldMapTerritories()
 			local color = getCountryColor(ownerUserId)
 			for x = cityX - COUNTRY_TERRITORY_RADIUS, cityX + COUNTRY_TERRITORY_RADIUS do
 				for z = cityZ - COUNTRY_TERRITORY_RADIUS, cityZ + COUNTRY_TERRITORY_RADIUS do
-					local distance = math.abs(x - cityX) + math.abs(z - cityZ)
+					local distance = math.max(math.abs(x - cityX), math.abs(z - cityZ))
 					if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length and distance <= COUNTRY_TERRITORY_RADIUS then
 						addWorldMapTerritoryCell(x, z, color)
 					end
@@ -855,8 +931,27 @@ local function requestCityUnit(unitType: string)
 	end
 end
 
+local function updateCityProductionStatus(model: Model?)
+	if not cityProductionStatus then
+		return
+	end
+
+	if not model then
+		cityProductionStatus.Text = "Выберите производство"
+		return
+	end
+
+	local queue = model:GetAttribute("ProductionQueue")
+	local secondsLeft = model:GetAttribute("ProductionSecondsLeft")
+	if typeof(queue) == "string" then
+		cityProductionStatus.Text = string.format("Строится: %s (%dс)", queue, typeof(secondsLeft) == "number" and secondsLeft or 0)
+	else
+		cityProductionStatus.Text = "Город свободен"
+	end
+end
+
 local function createProductionButton(parent: Instance, text: string, unitType: string, order: number)
-	local button = createHudButton(parent, text, UDim2.new(1, 0, 0, 30))
+	local button = createHudButton(parent, text, UDim2.new(1, 0, 0, 28))
 	button.LayoutOrder = order
 	button.MouseButton1Down:Connect(function()
 		ignoreNextWorldClick = true
@@ -883,7 +978,7 @@ local function ensureCityProductionGui()
 	window.BackgroundTransparency = 0.03
 	window.BorderSizePixel = 0
 	window.Position = UDim2.new(0.5, 0, 1, -18)
-	window.Size = UDim2.fromOffset(260, 216)
+	window.Size = UDim2.fromOffset(260, 252)
 	window.Visible = false
 	window.Parent = gui
 	addPadding(window, 12)
@@ -892,10 +987,14 @@ local function ensureCityProductionGui()
 	local title = createHudLabel(window, "Производство города", UDim2.new(1, 0, 0, 22), 15, true)
 	title.TextColor3 = Color3.fromRGB(255, 230, 164)
 
+	local status = createHudLabel(window, "Город свободен", UDim2.new(1, 0, 0, 18), 12, false)
+	status.Position = UDim2.fromOffset(0, 28)
+	status.TextColor3 = HUD_MUTED
+
 	local list = Instance.new("Frame")
 	list.BackgroundTransparency = 1
-	list.Position = UDim2.fromOffset(0, 32)
-	list.Size = UDim2.new(1, 0, 1, -32)
+	list.Position = UDim2.fromOffset(0, 54)
+	list.Size = UDim2.new(1, 0, 1, -54)
 	list.Parent = window
 
 	local layout = Instance.new("UIListLayout")
@@ -911,13 +1010,196 @@ local function ensureCityProductionGui()
 
 	cityProductionGui = gui
 	cityProductionWindow = window
+	cityProductionStatus = status
+
+	task.spawn(function()
+		while cityProductionGui do
+			updateCityProductionStatus(selectedCityModel)
+			task.wait(1)
+		end
+	end)
 end
 
 local function showCityProductionWindow(model: Model)
 	selectedCityModel = model
 	ensureCityProductionGui()
+	updateCityProductionStatus(model)
 	if cityProductionWindow then
 		cityProductionWindow.Visible = model:GetAttribute("OwnerUserId") == localPlayer.UserId
+	end
+end
+
+local function getKnownCivilizations(): { { OwnerUserId: number, CountryName: string } }
+	local civilizations = {}
+	local seenOwners = {}
+
+	for _, city in getCityModels() do
+		local ownerUserId = city:GetAttribute("OwnerUserId")
+		local countryName = city:GetAttribute("CountryName")
+		if typeof(ownerUserId) == "number" and ownerUserId ~= localPlayer.UserId and not seenOwners[ownerUserId] then
+			seenOwners[ownerUserId] = true
+			table.insert(civilizations, {
+				OwnerUserId = ownerUserId,
+				CountryName = typeof(countryName) == "string" and countryName or "Неизвестная держава",
+			})
+		end
+	end
+
+	table.sort(civilizations, function(a, b)
+		return a.CountryName < b.CountryName
+	end)
+
+	return civilizations
+end
+
+local function clearDiplomacyList()
+	if not diplomacyList then
+		return
+	end
+
+	for _, child in diplomacyList:GetChildren() do
+		if child:IsA("Frame") or child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+end
+
+local refreshDiplomacyList
+
+local function createDiplomacyRow(civilization: { OwnerUserId: number, CountryName: string }, order: number)
+	if not diplomacyList then
+		return
+	end
+
+	local relation = getRelationTo(civilization.OwnerUserId)
+	local row = Instance.new("Frame")
+	row.Name = "NationRow"
+	row.BackgroundColor3 = HUD_PANEL
+	row.BorderSizePixel = 0
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, 0, 0, 76)
+	row.Parent = diplomacyList
+	addPadding(row, 8)
+	addStroke(row, Color3.fromRGB(95, 104, 116), 0.65)
+
+	local title = createHudLabel(row, civilization.CountryName, UDim2.new(1, -170, 0, 22), 14, true)
+	title.TextColor3 = relation == "War" and Color3.fromRGB(255, 142, 128) or HUD_TEXT
+
+	local status = createHudLabel(row, relation == "War" and "Состояние: война" or "Состояние: мир", UDim2.new(1, -170, 0, 20), 12, false)
+	status.Position = UDim2.fromOffset(0, 24)
+	status.TextColor3 = HUD_MUTED
+
+	local tradeButton = createHudButton(row, "Торговать", UDim2.fromOffset(120, 26))
+	tradeButton.AnchorPoint = Vector2.new(1, 0)
+	tradeButton.Position = UDim2.new(1, 0, 0, 0)
+	tradeButton.Active = relation ~= "War"
+	tradeButton.AutoButtonColor = relation ~= "War"
+	tradeButton.BackgroundColor3 = relation == "War" and Color3.fromRGB(55, 58, 64) or HUD_PANEL_LIGHT
+	tradeButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	tradeButton.Activated:Connect(function()
+		if relation ~= "War" then
+			diplomacyActionEvent:FireServer(civilization.OwnerUserId, "Trade")
+			task.delay(0.25, refreshDiplomacyList)
+		end
+	end)
+
+	local warButton = createHudButton(row, relation == "War" and "Заключить мир" or "Объявить войну", UDim2.fromOffset(120, 26))
+	warButton.AnchorPoint = Vector2.new(1, 0)
+	warButton.Position = UDim2.new(1, 0, 0, 34)
+	warButton.BackgroundColor3 = relation == "War" and Color3.fromRGB(74, 118, 80) or Color3.fromRGB(134, 62, 58)
+	warButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	warButton.Activated:Connect(function()
+		diplomacyActionEvent:FireServer(civilization.OwnerUserId, relation == "War" and "MakePeace" or "DeclareWar")
+		task.delay(0.25, refreshDiplomacyList)
+	end)
+end
+
+function refreshDiplomacyList()
+	clearDiplomacyList()
+
+	if not diplomacyList then
+		return
+	end
+
+	local civilizations = getKnownCivilizations()
+	if #civilizations == 0 then
+		local empty = createHudLabel(diplomacyList, "Другие государства пока не найдены", UDim2.new(1, 0, 0, 32), 13, false)
+		empty.TextColor3 = HUD_MUTED
+		return
+	end
+
+	for index, civilization in civilizations do
+		createDiplomacyRow(civilization, index)
+	end
+end
+
+local function hideDiplomacyWindow()
+	if diplomacyWindow then
+		diplomacyWindow.Visible = false
+	end
+end
+
+local function ensureDiplomacyGui()
+	if diplomacyGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "DiplomacyGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.AnchorPoint = Vector2.new(0.5, 0.5)
+	window.BackgroundColor3 = HUD_DARK
+	window.BackgroundTransparency = 0.02
+	window.BorderSizePixel = 0
+	window.Position = UDim2.fromScale(0.5, 0.5)
+	window.Size = UDim2.fromOffset(430, 420)
+	window.Visible = false
+	window.Parent = gui
+	addPadding(window, 12)
+	addStroke(window, HUD_GOLD, 0.35)
+
+	local title = createHudLabel(window, "Державы", UDim2.new(1, -34, 0, 24), 18, true)
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local closeButton = createHudButton(window, "X", UDim2.fromOffset(28, 24))
+	closeButton.AnchorPoint = Vector2.new(1, 0)
+	closeButton.Position = UDim2.new(1, 0, 0, 0)
+	closeButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	closeButton.Activated:Connect(hideDiplomacyWindow)
+
+	local list = Instance.new("Frame")
+	list.Name = "List"
+	list.BackgroundTransparency = 1
+	list.Position = UDim2.fromOffset(0, 36)
+	list.Size = UDim2.new(1, 0, 1, -36)
+	list.Parent = window
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	diplomacyGui = gui
+	diplomacyWindow = window
+	diplomacyList = list
+end
+
+local function showDiplomacyWindow()
+	ensureDiplomacyGui()
+	refreshDiplomacyList()
+
+	if diplomacyWindow then
+		diplomacyWindow.Visible = true
 	end
 end
 
@@ -966,6 +1248,14 @@ local function ensureGameHud()
 	hudResourceLabels.Faith = createResourceChip(resources, "Вера 0")
 	hudResourceLabels.Food = createResourceChip(resources, "Пища 0")
 	hudResourceLabels.Production = createResourceChip(resources, "Произв. 0")
+
+	local nationsButton = createHudButton(topBar, "Державы", UDim2.fromOffset(118, 28))
+	nationsButton.AnchorPoint = Vector2.new(1, 0)
+	nationsButton.Position = UDim2.new(1, -164, 0, 9)
+	nationsButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	nationsButton.Activated:Connect(showDiplomacyWindow)
 
 	local era = createHudLabel(topBar, "Древний мир", UDim2.fromOffset(136, 46), 13, true)
 	era.AnchorPoint = Vector2.new(1, 0)
@@ -1076,7 +1366,7 @@ local function ensureUnitActionGui()
 	window.BackgroundTransparency = 0.03
 	window.BorderSizePixel = 0
 	window.Position = UDim2.new(1, -16, 1, -16)
-	window.Size = UDim2.fromOffset(282, 260)
+	window.Size = UDim2.fromOffset(282, 318)
 	window.Visible = false
 	window.Parent = gui
 
@@ -1137,6 +1427,7 @@ end
 
 local function hideUnitActionWindow()
 	movementMode = false
+	attackMode = false
 
 	if unitActionWindow then
 		unitActionWindow.Visible = false
@@ -1452,9 +1743,19 @@ end
 local function handleUnitAction(actionId: string, actionText: string)
 	if actionId == "Move" then
 		movementMode = true
+		attackMode = false
 		clearMovementHighlights()
 		showMovementForSelectedUnit()
 		setActionStatus("Выберите подсвеченную клетку")
+		return
+	end
+
+	if actionId == "Attack" then
+		movementMode = false
+		attackMode = true
+		clearMovementHighlights()
+		showAttackTargetsForSelectedUnit()
+		setActionStatus("Выберите вражеский юнит")
 		return
 	end
 
@@ -1464,6 +1765,7 @@ local function handleUnitAction(actionId: string, actionText: string)
 	end
 
 	movementMode = false
+	attackMode = false
 	clearMovementHighlights()
 
 	if selectedUnitId then
@@ -1534,7 +1836,9 @@ local function showUnitActionWindow(model: Model)
 
 	local order = 0
 	for _, action in ACTION_BUTTONS do
-		if (not action.SettlerOnly or unitType == "Settler") and (not action.BuilderOnly or unitType == "Builder") then
+		if (not action.SettlerOnly or unitType == "Settler")
+			and (not action.BuilderOnly or unitType == "Builder")
+			and (not action.AttackOnly or (unit and unit.Attack > 0)) then
 			order += 1
 			createActionButton(action.Id, action.Text, order)
 		end
@@ -1561,6 +1865,7 @@ local function selectUnit(model: Model)
 	clearHighlights()
 	hideCityProductionWindow()
 	movementMode = true
+	attackMode = false
 
 	selectedUnitModel = model
 	selectedUnitId = model:GetAttribute("UnitId") :: string
@@ -1594,6 +1899,20 @@ local function requestMove(tile: BasePart)
 	clearSelection()
 end
 
+local function requestAttack(targetModel: Model)
+	if not selectedUnitId or not attackMode then
+		return
+	end
+
+	local targetUnitId = targetModel:GetAttribute("UnitId")
+	if typeof(targetUnitId) ~= "string" then
+		return
+	end
+
+	unitActionEvent:FireServer(selectedUnitId, "Attack", targetUnitId)
+	clearSelection()
+end
+
 mouse.Button1Down:Connect(function()
 	if ignoreNextWorldClick then
 		ignoreNextWorldClick = false
@@ -1603,8 +1922,12 @@ mouse.Button1Down:Connect(function()
 	local target = mouse.Target
 	local unitModel = findUnitModel(target)
 
-	if unitModel and isOwnedUnit(unitModel) then
-		selectUnit(unitModel)
+	if unitModel then
+		if isOwnedUnit(unitModel) then
+			selectUnit(unitModel)
+		elseif attackMode then
+			requestAttack(unitModel)
+		end
 		return
 	end
 

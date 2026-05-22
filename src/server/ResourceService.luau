@@ -58,6 +58,18 @@ local function getResourceCandidates(biomeName: string): { string }
 	return candidates
 end
 
+local function isResourceAllowedOnTile(resourceName: string, biomeName: string): boolean
+	if biomeName == "Mountain" then
+		return false
+	end
+
+	if biomeName == "Water" then
+		return resourceName == "Fish"
+	end
+
+	return resourceName ~= "Fish"
+end
+
 local function shouldPlaceResource(random: Random, resourceName: string?): boolean
 	local rarity = 1
 	if resourceName then
@@ -276,7 +288,7 @@ function ResourceService.Generate()
 				local candidates = getResourceCandidates(biomeName)
 				if #candidates > 0 then
 					local resourceName = chooseResource(candidates, random)
-					if resourceName and shouldPlaceResource(random, resourceName) then
+					if resourceName and isResourceAllowedOnTile(resourceName, biomeName) and shouldPlaceResource(random, resourceName) then
 						local marker = createResourceVisual(resourcesFolder, tile, resourceName)
 						applyResourceToTile(tile, resourceName, marker)
 						placedResources += 1

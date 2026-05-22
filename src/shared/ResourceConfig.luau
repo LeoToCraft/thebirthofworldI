@@ -78,7 +78,6 @@ ResourceConfig.Types = {
 		Rarity = 0.35,
 		AllowedBiomes = {
 			Sand = true,
-			Mountain = true,
 		},
 		Weight = 4,
 		Color = Color3.fromRGB(142, 145, 139),
@@ -96,7 +95,6 @@ ResourceConfig.Types = {
 		AllowedBiomes = {
 			Grass = true,
 			Winter = true,
-			Mountain = true,
 		},
 		Weight = 2,
 		Color = Color3.fromRGB(91, 94, 101),
@@ -113,7 +111,6 @@ ResourceConfig.Types = {
 		Rarity = 0.22,
 		AllowedBiomes = {
 			Sand = true,
-			Mountain = true,
 		},
 		Weight = 1,
 		Color = Color3.fromRGB(245, 197, 66),

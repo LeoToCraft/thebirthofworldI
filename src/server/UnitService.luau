@@ -6,6 +6,7 @@ local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local CityService = require(script.Parent.CityService)
+local CityConfig = require(ReplicatedStorage.Shared.CityConfig)
 local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
 local UnitConfig = require(ReplicatedStorage.Shared.UnitConfig)
 
@@ -25,12 +26,12 @@ local unitsById = {}
 local occupiedTiles = {}
 local playerOrder = 0
 local botOwners = {
-	{ UserId = -101, Name = "Bot Rome", CountryName = "Rome" },
-	{ UserId = -102, Name = "Bot Egypt", CountryName = "Egypt" },
-	{ UserId = -103, Name = "Bot Japan", CountryName = "Japan" },
-	{ UserId = -104, Name = "Bot Greece", CountryName = "Greece" },
-	{ UserId = -105, Name = "Bot Aztec", CountryName = "Aztec" },
-	{ UserId = -106, Name = "Bot Norway", CountryName = "Norway" },
+	{ UserId = -101, Name = "Рим", CountryName = "Римская держава", CityNamePrefix = "Рим" },
+	{ UserId = -102, Name = "Египет", CountryName = "Египетское царство", CityNamePrefix = "Мемфис" },
+	{ UserId = -103, Name = "Япония", CountryName = "Ямато", CityNamePrefix = "Киото" },
+	{ UserId = -104, Name = "Греция", CountryName = "Эллада", CityNamePrefix = "Афины" },
+	{ UserId = -105, Name = "Ацтеки", CountryName = "Союз ацтеков", CityNamePrefix = "Теночтитлан" },
+	{ UserId = -106, Name = "Норвегия", CountryName = "Северное королевство", CityNamePrefix = "Берген" },
 }
 local setUnitActionState
 
@@ -522,6 +523,31 @@ local function getImprovementsFolder(): Folder
 	return newFolder
 end
 
+local function removeResourceVisual(resourceId: any)
+	if typeof(resourceId) ~= "string" then
+		return
+	end
+
+	local resourcesFolder = Workspace:FindFirstChild("Resources")
+	if not resourcesFolder then
+		return
+	end
+
+	for _, child in resourcesFolder:GetChildren() do
+		if child:GetAttribute("ResourceId") == resourceId then
+			child:Destroy()
+			return
+		end
+
+		for _, descendant in child:GetDescendants() do
+			if descendant:GetAttribute("ResourceId") == resourceId then
+				child:Destroy()
+				return
+			end
+		end
+	end
+end
+
 local function buildResourceImprovement(unitState)
 	if unitState.UnitType ~= "Builder" then
 		return
@@ -534,6 +560,7 @@ local function buildResourceImprovement(unitState)
 	end
 
 	tile:SetAttribute("ImprovedResource", true)
+	removeResourceVisual(tile:GetAttribute("ResourceId"))
 	tile:SetAttribute("FoodYield", (tile:GetAttribute("FoodYield") or 0) + 1)
 	tile:SetAttribute("ProductionYield", (tile:GetAttribute("ProductionYield") or 0) + 1)
 	CityService.RefreshYieldsNear(unitState.OwnerUserId, unitState.GridX, unitState.GridZ)
@@ -575,10 +602,45 @@ local function onCreateUnit(player: Player, cityId: string, unitType: string)
 		return
 	end
 
-	local x, z = findOpenAdjacentTile(unitType, cityState.GridX, cityState.GridZ)
-	if x and z then
-		createUnit(player, unitType, x, z)
+	if cityState.ProductionQueue ~= nil then
+		return
 	end
+
+	cityState.ProductionQueue = unitType
+	if cityState.Model then
+		cityState.Model:SetAttribute("ProductionQueue", unitType)
+		cityState.Model:SetAttribute("ProductionSecondsLeft", CityConfig.Economy.UnitProductionSeconds)
+	end
+
+	task.spawn(function()
+		for secondsLeft = CityConfig.Economy.UnitProductionSeconds, 1, -1 do
+			if not CityService.GetCity(cityId) then
+				return
+			end
+
+			if cityState.Model then
+				cityState.Model:SetAttribute("ProductionSecondsLeft", secondsLeft)
+			end
+
+			task.wait(1)
+		end
+
+		local currentCityState = CityService.GetCity(cityId)
+		if not currentCityState or currentCityState.ProductionQueue ~= unitType then
+			return
+		end
+
+		local x, z = findOpenAdjacentTile(unitType, currentCityState.GridX, currentCityState.GridZ)
+		if x and z then
+			createUnit(player, unitType, x, z)
+		end
+
+		currentCityState.ProductionQueue = nil
+		if currentCityState.Model then
+			currentCityState.Model:SetAttribute("ProductionQueue", nil)
+			currentCityState.Model:SetAttribute("ProductionSecondsLeft", 0)
+		end
+	end)
 end
 
 local function spawnStartingUnits(player: Player)
@@ -618,6 +680,51 @@ local function removeUnit(unitId: string, unitState)
 	end
 
 	unitsById[unitId] = nil
+end
+
+local function damageUnit(targetUnitId: string, targetState, amount: number)
+	local currentHealth = targetState.Model:GetAttribute("Health")
+	if typeof(currentHealth) ~= "number" then
+		currentHealth = UnitConfig.Types[targetState.UnitType].Health
+	end
+
+	local nextHealth = currentHealth - amount
+	targetState.Model:SetAttribute("Health", math.max(0, nextHealth))
+
+	if nextHealth <= 0 then
+		removeUnit(targetUnitId, targetState)
+	end
+end
+
+local function attackUnit(attackerUnitId: string, attackerState, targetUnitId: string, targetState): boolean
+	if attackerUnitId == targetUnitId or attackerState.OwnerUserId == targetState.OwnerUserId then
+		return false
+	end
+
+	local attackerConfig = UnitConfig.Types[attackerState.UnitType]
+	if not attackerConfig or attackerConfig.Attack <= 0 then
+		return false
+	end
+
+	local range = attackerConfig.Range or 1
+	local distance = math.abs(targetState.GridX - attackerState.GridX) + math.abs(targetState.GridZ - attackerState.GridZ)
+	if distance < 1 or distance > range then
+		return false
+	end
+
+	if not CityService.AreAtWar(attackerState.OwnerUserId, targetState.OwnerUserId) then
+		CityService.SetWar(attackerState.OwnerUserId, targetState.OwnerUserId, true)
+	end
+
+	local damage = attackerConfig.Attack
+	if targetState.Model:GetAttribute("Fortified") == true then
+		damage = math.floor(damage * 0.75)
+	end
+
+	damageUnit(targetUnitId, targetState, damage)
+	setUnitActionState(attackerState, "Attacked", false, false)
+
+	return true
 end
 
 local function healUnit(unitState, amount: number)
@@ -721,7 +828,35 @@ local function onUnitAction(player: Player, unitId: string, actionId: string, ac
 		end
 	elseif actionId == "BuildImprovement" then
 		buildResourceImprovement(unitState)
+	elseif actionId == "Attack" then
+		if typeof(actionValue) ~= "string" then
+			return
+		end
+
+		local targetState = unitsById[actionValue]
+		if targetState then
+			attackUnit(unitId, unitState, actionValue, targetState)
+		end
 	end
+end
+
+local function findBotAttackTarget(unitState): (string?, any?)
+	local unit = UnitConfig.Types[unitState.UnitType]
+	if not unit or unit.Attack <= 0 then
+		return nil, nil
+	end
+
+	local range = unit.Range or 1
+	for targetUnitId, targetState in unitsById do
+		if targetState.OwnerUserId ~= unitState.OwnerUserId then
+			local distance = math.abs(targetState.GridX - unitState.GridX) + math.abs(targetState.GridZ - unitState.GridZ)
+			if distance >= 1 and distance <= range then
+				return targetUnitId, targetState
+			end
+		end
+	end
+
+	return nil, nil
 end
 
 local function spawnBotUnits()
@@ -766,12 +901,17 @@ local function moveBotUnits()
 					end
 
 					if botOwner then
-						local cityModel = CityService.FoundCity(botOwner :: any, unitState.GridX, unitState.GridZ, botOwner.CountryName .. " City")
+						local cityModel = CityService.FoundCity(botOwner :: any, unitState.GridX, unitState.GridZ, botOwner.CityNamePrefix)
 						if cityModel then
 							removeUnit(unitId, unitState)
 							continue
 						end
 					end
+				end
+
+				local targetUnitId, targetState = findBotAttackTarget(unitState)
+				if targetUnitId and targetState and attackUnit(unitId, unitState, targetUnitId, targetState) then
+					continue
 				end
 
 				local unit = UnitConfig.Types[unitState.UnitType]
