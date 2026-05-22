@@ -300,6 +300,25 @@ local function setCityAttributes(model: Model, cityId: string, player: Player, c
 	end
 end
 
+local function getNumberAttribute(instance: Instance, attributeName: string): number
+	local value = instance:GetAttribute(attributeName)
+	if typeof(value) == "number" then
+		return value
+	end
+
+	return 0
+end
+
+local function setCityYieldAttributes(model: Model, tile: BasePart)
+	local food = getNumberAttribute(tile, "FoodYield")
+	local production = getNumberAttribute(tile, "ProductionYield")
+	local gold = getNumberAttribute(tile, "GoldYield")
+
+	model:SetAttribute("FoodPerTurn", food)
+	model:SetAttribute("ProductionPerTurn", production)
+	model:SetAttribute("GoldPerTurn", gold)
+end
+
 local function onCreateCountry(player: Player, requestedCountryName: string)
 	local countryName = sanitizeName(requestedCountryName, player.Name, 32)
 	player:SetAttribute(COUNTRY_NAME_ATTRIBUTE, countryName)
@@ -342,6 +361,7 @@ function CityService.FoundCity(player: Player, x: number, z: number, requestedCi
 	local countryName = getCountryName(player)
 	local cityModel = createCityVisual(cityName, tile)
 	setCityAttributes(cityModel, cityId, player, cityName, countryName, x, z)
+	setCityYieldAttributes(cityModel, tile)
 	addCityNameplate(cityModel, cityName, countryName, tile)
 	cityModel.Parent = getCitiesFolder()
 	tile:SetAttribute("HasCity", true)
@@ -356,6 +376,9 @@ function CityService.FoundCity(player: Player, x: number, z: number, requestedCi
 		Population = CityConfig.Starting.Population,
 		Food = CityConfig.Starting.Food,
 		Production = CityConfig.Starting.Production,
+		FoodPerTurn = cityModel:GetAttribute("FoodPerTurn"),
+		ProductionPerTurn = cityModel:GetAttribute("ProductionPerTurn"),
+		GoldPerTurn = cityModel:GetAttribute("GoldPerTurn"),
 	}
 
 	return cityModel, nil

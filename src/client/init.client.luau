@@ -35,6 +35,7 @@ local hudContextTitle: TextLabel? = nil
 local hudContextSubtitle: TextLabel? = nil
 local hudContextStats: TextLabel? = nil
 local worldMapGrid: Frame? = nil
+local worldMapTerritories: Frame? = nil
 local worldMapMarkers: Frame? = nil
 local avatarImagesByUserId: { [number]: string } = {}
 
@@ -54,6 +55,8 @@ local WORLD_MAP_SIZE = UDim2.fromOffset(
 	MapConfig.Map.Width * WORLD_MAP_TILE_SIZE,
 	MapConfig.Map.Length * WORLD_MAP_TILE_SIZE
 )
+local WORLD_MAP_EXPECTED_TILES = MapConfig.Map.Width * MapConfig.Map.Length
+local COUNTRY_TERRITORY_RADIUS = 5
 local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "Move", Text = "Переместить" },
@@ -475,6 +478,22 @@ local function getBiomeColor(biome: any): Color3
 	return Color3.fromRGB(50, 55, 60)
 end
 
+local function getMapTileCount(): number
+	local mapFolder = getMapFolder()
+	if not mapFolder then
+		return 0
+	end
+
+	local count = 0
+	for _, child in mapFolder:GetChildren() do
+		if child:IsA("BasePart") and child:GetAttribute("Biome") then
+			count += 1
+		end
+	end
+
+	return count
+end
+
 local function createWorldMapTiles(parent: Frame)
 	parent:ClearAllChildren()
 
@@ -497,6 +516,27 @@ local function createWorldMapTiles(parent: Frame)
 			cell.Parent = parent
 		end
 	end
+end
+
+local function getCountryColor(userId: number): Color3
+	local hue = ((userId * 37) % 360) / 360
+	return Color3.fromHSV(hue, 0.58, 0.95)
+end
+
+local function getCityModels(): { Model }
+	local cities = {}
+	local citiesFolder = getCitiesFolder()
+	if not citiesFolder then
+		return cities
+	end
+
+	for _, child in citiesFolder:GetChildren() do
+		if child:IsA("Model") and child:GetAttribute("CityId") then
+			table.insert(cities, child)
+		end
+	end
+
+	return cities
 end
 
 local function getPlayerMapPosition(userId: number): (number?, number?)
@@ -547,12 +587,85 @@ local function getAvatarImage(userId: number): string
 	return ""
 end
 
+local function addWorldMapTerritoryCell(x: number, z: number, color: Color3)
+	if not worldMapTerritories then
+		return
+	end
+
+	local cell = Instance.new("Frame")
+	cell.BackgroundColor3 = color
+	cell.BackgroundTransparency = 0.48
+	cell.BorderSizePixel = 0
+	cell.Position = UDim2.fromOffset((x - 1) * WORLD_MAP_TILE_SIZE, (z - 1) * WORLD_MAP_TILE_SIZE)
+	cell.Size = UDim2.fromOffset(WORLD_MAP_TILE_SIZE, WORLD_MAP_TILE_SIZE)
+	cell.ZIndex = 2
+	cell.Parent = worldMapTerritories
+end
+
+local function updateWorldMapTerritories()
+	if not worldMapTerritories then
+		return
+	end
+
+	worldMapTerritories:ClearAllChildren()
+
+	for _, city in getCityModels() do
+		local ownerUserId = city:GetAttribute("OwnerUserId")
+		local cityX = city:GetAttribute("GridX")
+		local cityZ = city:GetAttribute("GridZ")
+		if typeof(ownerUserId) == "number" and typeof(cityX) == "number" and typeof(cityZ) == "number" then
+			local color = getCountryColor(ownerUserId)
+			for x = cityX - COUNTRY_TERRITORY_RADIUS, cityX + COUNTRY_TERRITORY_RADIUS do
+				for z = cityZ - COUNTRY_TERRITORY_RADIUS, cityZ + COUNTRY_TERRITORY_RADIUS do
+					local distance = math.abs(x - cityX) + math.abs(z - cityZ)
+					if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length and distance <= COUNTRY_TERRITORY_RADIUS then
+						addWorldMapTerritoryCell(x, z, color)
+					end
+				end
+			end
+		end
+	end
+end
+
+local function addWorldMapCityLabel(city: Model)
+	if not worldMapMarkers then
+		return
+	end
+
+	local cityName = city:GetAttribute("CityName")
+	local x = city:GetAttribute("GridX")
+	local z = city:GetAttribute("GridZ")
+	if typeof(cityName) ~= "string" or typeof(x) ~= "number" or typeof(z) ~= "number" then
+		return
+	end
+
+	local label = Instance.new("TextLabel")
+	label.Name = "City_" .. cityName
+	label.AnchorPoint = Vector2.new(0.5, 1)
+	label.BackgroundColor3 = Color3.fromRGB(11, 13, 16)
+	label.BackgroundTransparency = 0.25
+	label.BorderSizePixel = 0
+	label.Font = Enum.Font.GothamBold
+	label.Position = UDim2.fromScale((x - 0.5) / MapConfig.Map.Width, (z - 0.5) / MapConfig.Map.Length)
+	label.Size = UDim2.fromOffset(70, 14)
+	label.Text = cityName
+	label.TextColor3 = HUD_TEXT
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.45
+	label.ZIndex = 5
+	label.Parent = worldMapMarkers
+end
+
 local function updateWorldMapMarkers()
 	if not worldMapMarkers then
 		return
 	end
 
 	worldMapMarkers:ClearAllChildren()
+
+	for _, city in getCityModels() do
+		addWorldMapCityLabel(city)
+	end
 
 	for _, player in Players:GetPlayers() do
 		local x, z = getPlayerMapPosition(player.UserId)
@@ -580,10 +693,38 @@ local function updateWorldMapMarkers()
 	end
 end
 
+local function updateWorldMap()
+	updateWorldMapTerritories()
+	updateWorldMapMarkers()
+end
+
 local function startWorldMapUpdates()
 	task.spawn(function()
 		while gameHudGui do
-			updateWorldMapMarkers()
+			updateWorldMap()
+			task.wait(1)
+		end
+	end)
+end
+
+local function startWorldMapTileRefresh()
+	task.spawn(function()
+		local lastTileCount = -1
+		for _ = 1, 12 do
+			if not worldMapGrid then
+				return
+			end
+
+			local tileCount = getMapTileCount()
+			if tileCount ~= lastTileCount then
+				createWorldMapTiles(worldMapGrid)
+				lastTileCount = tileCount
+			end
+
+			if tileCount >= WORLD_MAP_EXPECTED_TILES then
+				return
+			end
+
 			task.wait(1)
 		end
 	end)
@@ -756,6 +897,13 @@ local function ensureGameHud()
 	worldMapGrid.Size = UDim2.fromScale(1, 1)
 	worldMapGrid.Parent = mapBox
 
+	worldMapTerritories = Instance.new("Frame")
+	worldMapTerritories.Name = "CountryTerritories"
+	worldMapTerritories.BackgroundTransparency = 1
+	worldMapTerritories.Size = UDim2.fromScale(1, 1)
+	worldMapTerritories.ZIndex = 2
+	worldMapTerritories.Parent = mapBox
+
 	worldMapMarkers = Instance.new("Frame")
 	worldMapMarkers.Name = "PlayerMarkers"
 	worldMapMarkers.BackgroundTransparency = 1
@@ -770,13 +918,14 @@ local function ensureGameHud()
 	gameHudGui = gui
 	updateGameHudCountry()
 	createWorldMapTiles(worldMapGrid)
-	updateWorldMapMarkers()
+	updateWorldMap()
 	startWorldMapUpdates()
+	startWorldMapTileRefresh()
 
 	if not getMapFolder() then
 		Workspace.ChildAdded:Connect(function(child)
 			if child.Name == "GeneratedMap" and worldMapGrid then
-				createWorldMapTiles(worldMapGrid)
+				startWorldMapTileRefresh()
 			end
 		end)
 	end
