@@ -1,1 +1,3 @@
-print("Hello world, from server!")
+local MapGenerator = require(script.MapGenerator)
+
+MapGenerator.Generate()
