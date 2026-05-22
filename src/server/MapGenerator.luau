@@ -92,6 +92,8 @@ local function createTile(parent: Instance, x: number, z: number, biomeName: str
 end
 
 function MapGenerator.Generate()
+	Workspace:SetAttribute("MapGenerating", true)
+
 	local previousMap = Workspace:FindFirstChild(MAP_FOLDER_NAME)
 	if previousMap then
 		previousMap:Destroy()
@@ -101,12 +103,24 @@ function MapGenerator.Generate()
 	mapFolder.Name = MAP_FOLDER_NAME
 	mapFolder.Parent = Workspace
 
+	local createdTiles = 0
+	local batchSize = MapConfig.Generation.TileBatchSize
+
 	for x = 1, MapConfig.Map.Width do
 		for z = 1, MapConfig.Map.Length do
 			local biomeName, height = chooseTile(x, z)
 			createTile(mapFolder, x, z, biomeName, height)
+			createdTiles += 1
+
+			if createdTiles % batchSize == 0 then
+				Workspace:SetAttribute("MapGeneratedTiles", createdTiles)
+				task.wait()
+			end
 		end
 	end
+
+	Workspace:SetAttribute("MapGeneratedTiles", createdTiles)
+	Workspace:SetAttribute("MapGenerating", false)
 
 	return mapFolder
 end

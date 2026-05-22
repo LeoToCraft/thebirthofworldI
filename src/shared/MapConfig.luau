@@ -14,6 +14,11 @@ MapConfig.Map = {
 	Origin = Vector3.new(0, 0, 0),
 }
 
+MapConfig.Generation = {
+	TileBatchSize = 300,
+	ResourceBatchSize = 250,
+}
+
 MapConfig.Biomes = {
 	Water = {
 		DisplayName = "Water",

@@ -1,7 +1,7 @@
 local ResourceConfig = {}
 
 ResourceConfig.Generation = {
-	BaseChance = 0.14,
+	BaseChance = 0.06,
 }
 
 ResourceConfig.Visual = {

@@ -12,6 +12,7 @@ local MAP_FOLDER_NAME = "GeneratedMap"
 local RESOURCES_FOLDER_NAME = "Resources"
 
 local resourcesById = {}
+local candidatesByBiome: { [string]: { string } } = {}
 
 local function getResourcesFolder(): Folder
 	local resourcesFolder = Workspace:FindFirstChild(RESOURCES_FOLDER_NAME)
@@ -40,6 +41,10 @@ local function getMapFolder(): Folder?
 end
 
 local function getResourceCandidates(biomeName: string): { string }
+	if candidatesByBiome[biomeName] then
+		return candidatesByBiome[biomeName]
+	end
+
 	local candidates = {}
 
 	for resourceName, resource in ResourceConfig.Types do
@@ -47,6 +52,8 @@ local function getResourceCandidates(biomeName: string): { string }
 			table.insert(candidates, resourceName)
 		end
 	end
+
+	candidatesByBiome[biomeName] = candidates
 
 	return candidates
 end
@@ -242,18 +249,25 @@ local function applyResourceToTile(tile: BasePart, resourceName: string, marker:
 end
 
 function ResourceService.Generate()
+	Workspace:SetAttribute("ResourcesGenerating", true)
 	clearResources()
 
 	local mapFolder = getMapFolder()
 	if not mapFolder then
+		Workspace:SetAttribute("ResourcesGenerating", false)
 		return
 	end
 
 	local resourcesFolder = getResourcesFolder()
 	local random = Random.new(os.time() + math.floor(os.clock() * 1000000))
+	local checkedTiles = 0
+	local placedResources = 0
+	local batchSize = MapConfig.Generation.ResourceBatchSize
 
 	for _, tile in mapFolder:GetChildren() do
 		if tile:IsA("BasePart") then
+			checkedTiles += 1
+
 			local x = tile:GetAttribute("GridX")
 			local z = tile:GetAttribute("GridZ")
 			local biomeName = tile:GetAttribute("Biome")
@@ -265,11 +279,22 @@ function ResourceService.Generate()
 					if resourceName and shouldPlaceResource(random, resourceName) then
 						local marker = createResourceVisual(resourcesFolder, tile, resourceName)
 						applyResourceToTile(tile, resourceName, marker)
+						placedResources += 1
 					end
 				end
 			end
+
+			if checkedTiles % batchSize == 0 then
+				Workspace:SetAttribute("ResourceCheckedTiles", checkedTiles)
+				Workspace:SetAttribute("PlacedResources", placedResources)
+				task.wait()
+			end
 		end
 	end
+
+	Workspace:SetAttribute("ResourceCheckedTiles", checkedTiles)
+	Workspace:SetAttribute("PlacedResources", placedResources)
+	Workspace:SetAttribute("ResourcesGenerating", false)
 end
 
 return ResourceService
