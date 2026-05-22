@@ -29,12 +29,23 @@ local cityNameWindow: Frame? = nil
 local cityNameInput: TextBox? = nil
 local countryMenuGui: ScreenGui? = nil
 local countryNameInput: TextBox? = nil
+local gameHudGui: ScreenGui? = nil
+local hudCountryLabel: TextLabel? = nil
+local hudContextTitle: TextLabel? = nil
+local hudContextSubtitle: TextLabel? = nil
+local hudContextStats: TextLabel? = nil
 
 local highlightFolder = Instance.new("Folder")
 highlightFolder.Name = "MovementHighlights"
 highlightFolder.Parent = Workspace
 
 local HEALTH_BAR_NAME = "UnitHealthBar"
+local HUD_DARK = Color3.fromRGB(22, 25, 30)
+local HUD_PANEL = Color3.fromRGB(32, 37, 45)
+local HUD_PANEL_LIGHT = Color3.fromRGB(45, 52, 62)
+local HUD_GOLD = Color3.fromRGB(226, 190, 112)
+local HUD_TEXT = Color3.fromRGB(245, 239, 221)
+local HUD_MUTED = Color3.fromRGB(184, 191, 198)
 local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "Move", Text = "Переместить" },
@@ -54,6 +65,10 @@ end
 
 local function getUnitsFolder(): Folder?
 	return Workspace:FindFirstChild("Units") :: Folder?
+end
+
+local function getCitiesFolder(): Folder?
+	return Workspace:FindFirstChild("Cities") :: Folder?
 end
 
 local function getFirstBasePart(instance: Instance): BasePart?
@@ -89,6 +104,20 @@ local function findUnitModel(instance: Instance?): Model?
 
 	while current and current ~= Workspace do
 		if current:IsA("Model") and current:GetAttribute("UnitId") then
+			return current
+		end
+
+		current = current.Parent
+	end
+
+	return nil
+end
+
+local function findCityModel(instance: Instance?): Model?
+	local current = instance
+
+	while current and current ~= Workspace do
+		if current:IsA("Model") and current:GetAttribute("CityId") then
 			return current
 		end
 
@@ -368,6 +397,281 @@ local function showMovementForSelectedUnit()
 	end
 end
 
+local function addStroke(instance: GuiObject, color: Color3?, transparency: number?)
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color or HUD_GOLD
+	stroke.Transparency = transparency or 0.35
+	stroke.Thickness = 1
+	stroke.Parent = instance
+end
+
+local function addPadding(instance: GuiObject, inset: number)
+	local padding = Instance.new("UIPadding")
+	padding.PaddingBottom = UDim.new(0, inset)
+	padding.PaddingLeft = UDim.new(0, inset)
+	padding.PaddingRight = UDim.new(0, inset)
+	padding.PaddingTop = UDim.new(0, inset)
+	padding.Parent = instance
+end
+
+local function createHudLabel(parent: Instance, text: string, size: UDim2, textSize: number, bold: boolean): TextLabel
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+	label.Size = size
+	label.Text = text
+	label.TextColor3 = HUD_TEXT
+	label.TextSize = textSize
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = parent
+
+	return label
+end
+
+local function createHudButton(parent: Instance, text: string, size: UDim2): TextButton
+	local button = Instance.new("TextButton")
+	button.AutoButtonColor = true
+	button.BackgroundColor3 = HUD_PANEL_LIGHT
+	button.BorderSizePixel = 0
+	button.Font = Enum.Font.GothamBold
+	button.Size = size
+	button.Text = text
+	button.TextColor3 = HUD_TEXT
+	button.TextSize = 13
+	button.Parent = parent
+	addStroke(button, Color3.fromRGB(128, 137, 148), 0.65)
+
+	return button
+end
+
+local function createResourceChip(parent: Instance, text: string)
+	local chip = Instance.new("Frame")
+	chip.BackgroundColor3 = Color3.fromRGB(25, 30, 37)
+	chip.BorderSizePixel = 0
+	chip.Size = UDim2.fromOffset(88, 28)
+	chip.Parent = parent
+	addStroke(chip, Color3.fromRGB(84, 91, 103), 0.65)
+
+	local label = createHudLabel(chip, text, UDim2.fromScale(1, 1), 12, true)
+	label.TextXAlignment = Enum.TextXAlignment.Center
+end
+
+local function updateGameHudCountry()
+	if not hudCountryLabel then
+		return
+	end
+
+	local countryName = localPlayer:GetAttribute("CountryName")
+	if typeof(countryName) == "string" and countryName ~= "" then
+		hudCountryLabel.Text = countryName
+	else
+		hudCountryLabel.Text = "Новая страна"
+	end
+end
+
+local function setHudContext(title: string, subtitle: string, stats: string)
+	if hudContextTitle then
+		hudContextTitle.Text = title
+	end
+
+	if hudContextSubtitle then
+		hudContextSubtitle.Text = subtitle
+	end
+
+	if hudContextStats then
+		hudContextStats.Text = stats
+	end
+end
+
+local function setHudContextForUnit(model: Model)
+	local unitType = model:GetAttribute("UnitType")
+	local unit = typeof(unitType) == "string" and UnitConfig.Types[unitType] or nil
+	local displayName = unit and unit.DisplayName or tostring(unitType or "Юнит")
+	local health = model:GetAttribute("Health")
+	local maxHealth = getUnitMaxHealth(model)
+	local x = model:GetAttribute("GridX")
+	local z = model:GetAttribute("GridZ")
+	local location = typeof(x) == "number" and typeof(z) == "number" and string.format("Клетка %d:%d", x, z) or "Клетка не выбрана"
+	local stats = unit and string.format("HP %d/%d   Атака %d   Ход %d", math.floor((health :: number?) or maxHealth), maxHealth, unit.Attack, unit.Movement)
+		or string.format("HP %d/%d", math.floor((health :: number?) or maxHealth), maxHealth)
+
+	setHudContext(displayName, location, stats)
+end
+
+local function setHudContextForCity(model: Model)
+	local cityName = model:GetAttribute("CityName")
+	local countryName = model:GetAttribute("CountryName")
+	local population = model:GetAttribute("Population")
+	local food = model:GetAttribute("Food")
+	local production = model:GetAttribute("Production")
+	local x = model:GetAttribute("GridX")
+	local z = model:GetAttribute("GridZ")
+
+	local title = typeof(cityName) == "string" and cityName or "Город"
+	local subtitleCountry = typeof(countryName) == "string" and countryName or "Неизвестная страна"
+	local location = typeof(x) == "number" and typeof(z) == "number" and string.format("Клетка %d:%d", x, z) or "Клетка не выбрана"
+	local stats = string.format(
+		"Население %d   Пища %d   Производство %d",
+		typeof(population) == "number" and population or 0,
+		typeof(food) == "number" and food or 0,
+		typeof(production) == "number" and production or 0
+	)
+
+	setHudContext(title, subtitleCountry .. "   " .. location, stats)
+end
+
+local function ensureGameHud()
+	if gameHudGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "StrategyHudGui"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = playerGui
+
+	local topBar = Instance.new("Frame")
+	topBar.Name = "TopBar"
+	topBar.BackgroundColor3 = HUD_DARK
+	topBar.BackgroundTransparency = 0.04
+	topBar.BorderSizePixel = 0
+	topBar.Size = UDim2.new(1, 0, 0, 46)
+	topBar.Parent = gui
+	addStroke(topBar, HUD_GOLD, 0.55)
+
+	local country = createHudLabel(topBar, "Новая страна", UDim2.fromOffset(210, 46), 16, true)
+	country.Position = UDim2.fromOffset(16, 0)
+	country.TextColor3 = Color3.fromRGB(255, 230, 164)
+	hudCountryLabel = country
+
+	local resources = Instance.new("Frame")
+	resources.Name = "Resources"
+	resources.BackgroundTransparency = 1
+	resources.Position = UDim2.fromOffset(236, 9)
+	resources.Size = UDim2.new(1, -560, 0, 28)
+	resources.Parent = topBar
+
+	local resourceLayout = Instance.new("UIListLayout")
+	resourceLayout.FillDirection = Enum.FillDirection.Horizontal
+	resourceLayout.Padding = UDim.new(0, 8)
+	resourceLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	resourceLayout.Parent = resources
+
+	createResourceChip(resources, "Наука 0")
+	createResourceChip(resources, "Культура 0")
+	createResourceChip(resources, "Золото 0")
+	createResourceChip(resources, "Вера 0")
+	createResourceChip(resources, "Пища 0")
+	createResourceChip(resources, "Произв. 0")
+
+	local era = createHudLabel(topBar, "Древний мир", UDim2.fromOffset(136, 46), 13, true)
+	era.AnchorPoint = Vector2.new(1, 0)
+	era.Position = UDim2.new(1, -18, 0, 0)
+	era.TextXAlignment = Enum.TextXAlignment.Right
+	era.TextColor3 = HUD_MUTED
+
+	local leftRail = Instance.new("Frame")
+	leftRail.Name = "LeftRail"
+	leftRail.BackgroundColor3 = HUD_DARK
+	leftRail.BackgroundTransparency = 0.08
+	leftRail.BorderSizePixel = 0
+	leftRail.Position = UDim2.fromOffset(12, 64)
+	leftRail.Size = UDim2.fromOffset(54, 294)
+	leftRail.Parent = gui
+	addPadding(leftRail, 7)
+	addStroke(leftRail, HUD_GOLD, 0.6)
+
+	local railLayout = Instance.new("UIListLayout")
+	railLayout.Padding = UDim.new(0, 8)
+	railLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	railLayout.Parent = leftRail
+
+	for _, text in { "Тех", "Культ", "Дер", "Люди", "Отч", "Лин" } do
+		local button = createHudButton(leftRail, text, UDim2.fromOffset(40, 38))
+		button.TextSize = 11
+	end
+
+	local rightPanel = Instance.new("Frame")
+	rightPanel.Name = "RightPanel"
+	rightPanel.AnchorPoint = Vector2.new(1, 0)
+	rightPanel.BackgroundColor3 = HUD_DARK
+	rightPanel.BackgroundTransparency = 0.08
+	rightPanel.BorderSizePixel = 0
+	rightPanel.Position = UDim2.new(1, -12, 0, 64)
+	rightPanel.Size = UDim2.fromOffset(220, 168)
+	rightPanel.Parent = gui
+	addPadding(rightPanel, 12)
+	addStroke(rightPanel, HUD_GOLD, 0.6)
+
+	local rightTitle = createHudLabel(rightPanel, "Мир", UDim2.new(1, 0, 0, 22), 15, true)
+	rightTitle.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local rightText = createHudLabel(rightPanel, "Рейтинги\nДипломатия\nГорода-государства\nТорговля", UDim2.new(1, 0, 1, -30), 13, false)
+	rightText.Position = UDim2.fromOffset(0, 30)
+	rightText.TextColor3 = HUD_MUTED
+	rightText.TextYAlignment = Enum.TextYAlignment.Top
+
+	local miniMap = Instance.new("Frame")
+	miniMap.Name = "MiniMapPanel"
+	miniMap.AnchorPoint = Vector2.new(0, 1)
+	miniMap.BackgroundColor3 = HUD_DARK
+	miniMap.BackgroundTransparency = 0.04
+	miniMap.BorderSizePixel = 0
+	miniMap.Position = UDim2.new(0, 16, 1, -16)
+	miniMap.Size = UDim2.fromOffset(236, 156)
+	miniMap.Parent = gui
+	addPadding(miniMap, 10)
+	addStroke(miniMap, HUD_GOLD, 0.45)
+
+	local miniTitle = createHudLabel(miniMap, "Карта мира", UDim2.new(1, 0, 0, 20), 13, true)
+	miniTitle.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local mapBox = Instance.new("Frame")
+	mapBox.Name = "MapBox"
+	mapBox.BackgroundColor3 = Color3.fromRGB(28, 62, 63)
+	mapBox.BorderSizePixel = 0
+	mapBox.Position = UDim2.fromOffset(0, 28)
+	mapBox.Size = UDim2.new(1, 0, 1, -28)
+	mapBox.Parent = miniMap
+	addStroke(mapBox, Color3.fromRGB(96, 121, 111), 0.45)
+
+	for i = 1, 18 do
+		local dot = Instance.new("Frame")
+		dot.BackgroundColor3 = i % 4 == 0 and Color3.fromRGB(211, 196, 132) or Color3.fromRGB(58, 126, 91)
+		dot.BorderSizePixel = 0
+		dot.Position = UDim2.fromScale(((i * 37) % 100) / 100, ((i * 61) % 100) / 100)
+		dot.Size = UDim2.fromOffset(10, 6)
+		dot.Parent = mapBox
+	end
+
+	local bottomCenter = Instance.new("Frame")
+	bottomCenter.Name = "ContextPanel"
+	bottomCenter.AnchorPoint = Vector2.new(0.5, 1)
+	bottomCenter.BackgroundColor3 = HUD_DARK
+	bottomCenter.BackgroundTransparency = 0.03
+	bottomCenter.BorderSizePixel = 0
+	bottomCenter.Position = UDim2.new(0.5, 0, 1, -16)
+	bottomCenter.Size = UDim2.fromOffset(460, 116)
+	bottomCenter.Parent = gui
+	addPadding(bottomCenter, 14)
+	addStroke(bottomCenter, HUD_GOLD, 0.45)
+
+	hudContextTitle = createHudLabel(bottomCenter, "Империя", UDim2.new(1, 0, 0, 26), 18, true)
+	hudContextTitle.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	hudContextSubtitle = createHudLabel(bottomCenter, "Выберите юнит или город", UDim2.new(1, 0, 0, 20), 13, false)
+	hudContextSubtitle.Position = UDim2.fromOffset(0, 32)
+	hudContextSubtitle.TextColor3 = HUD_MUTED
+
+	hudContextStats = createHudLabel(bottomCenter, "Режим: без ходов", UDim2.new(1, 0, 0, 20), 13, true)
+	hudContextStats.Position = UDim2.fromOffset(0, 62)
+
+	gameHudGui = gui
+	updateGameHudCountry()
+end
+
 local function ensureUnitActionGui()
 	if unitActionGui then
 		return
@@ -381,10 +685,11 @@ local function ensureUnitActionGui()
 	local window = Instance.new("Frame")
 	window.Name = "Window"
 	window.AnchorPoint = Vector2.new(1, 1)
-	window.BackgroundColor3 = Color3.fromRGB(28, 31, 36)
+	window.BackgroundColor3 = HUD_DARK
+	window.BackgroundTransparency = 0.03
 	window.BorderSizePixel = 0
-	window.Position = UDim2.new(1, -18, 1, -18)
-	window.Size = UDim2.fromOffset(240, 284)
+	window.Position = UDim2.new(1, -16, 1, -16)
+	window.Size = UDim2.fromOffset(282, 260)
 	window.Visible = false
 	window.Parent = gui
 
@@ -396,8 +701,8 @@ local function ensureUnitActionGui()
 	padding.Parent = window
 
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(232, 220, 170)
-	stroke.Transparency = 0.35
+	stroke.Color = HUD_GOLD
+	stroke.Transparency = 0.45
 	stroke.Thickness = 1
 	stroke.Parent = window
 
@@ -406,8 +711,8 @@ local function ensureUnitActionGui()
 	title.BackgroundTransparency = 1
 	title.Font = Enum.Font.GothamBold
 	title.Size = UDim2.new(1, 0, 0, 22)
-	title.Text = "Юнит"
-	title.TextColor3 = Color3.fromRGB(255, 247, 214)
+	title.Text = "Команды"
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
 	title.TextSize = 16
 	title.TextXAlignment = Enum.TextXAlignment.Left
 	title.Parent = window
@@ -419,7 +724,7 @@ local function ensureUnitActionGui()
 	status.Position = UDim2.fromOffset(0, 24)
 	status.Size = UDim2.new(1, 0, 0, 18)
 	status.Text = "Выберите действие"
-	status.TextColor3 = Color3.fromRGB(198, 205, 214)
+	status.TextColor3 = HUD_MUTED
 	status.TextSize = 12
 	status.TextXAlignment = Enum.TextXAlignment.Left
 	status.Parent = window
@@ -797,15 +1102,16 @@ local function createActionButton(actionId: string, text: string, order: number)
 	local button = Instance.new("TextButton")
 	button.Name = actionId .. "Button"
 	button.AutoButtonColor = true
-	button.BackgroundColor3 = Color3.fromRGB(48, 55, 64)
+	button.BackgroundColor3 = HUD_PANEL_LIGHT
 	button.BorderSizePixel = 0
 	button.Font = Enum.Font.GothamSemibold
 	button.LayoutOrder = order
 	button.Size = UDim2.new(1, 0, 0, 29)
 	button.Text = text
-	button.TextColor3 = Color3.fromRGB(245, 247, 250)
+	button.TextColor3 = HUD_TEXT
 	button.TextSize = 13
 	button.Parent = unitActionList
+	addStroke(button, Color3.fromRGB(120, 129, 140), 0.65)
 
 	button.MouseButton1Down:Connect(function()
 		ignoreNextWorldClick = true
@@ -817,6 +1123,7 @@ local function createActionButton(actionId: string, text: string, order: number)
 end
 
 local function showUnitActionWindow(model: Model)
+	ensureGameHud()
 	ensureUnitActionGui()
 	clearActionButtons()
 
@@ -829,6 +1136,8 @@ local function showUnitActionWindow(model: Model)
 	if unitActionTitle then
 		unitActionTitle.Text = displayName
 	end
+
+	setHudContextForUnit(model)
 
 	if typeof(health) == "number" then
 		setActionStatus(string.format("HP %d/%d", math.max(0, math.floor(health + 0.5)), math.floor(maxHealth + 0.5)))
@@ -855,9 +1164,11 @@ local function clearSelection()
 	closeCityNameDialog()
 	selectedUnitId = nil
 	selectedUnitModel = nil
+	setHudContext("Империя", "Выберите юнит или город", "Режим: без ходов")
 end
 
 local function selectUnit(model: Model)
+	ensureGameHud()
 	clearHighlights()
 	movementMode = true
 
@@ -906,6 +1217,17 @@ mouse.Button1Down:Connect(function()
 		return
 	end
 
+	local cityModel = findCityModel(target)
+	if cityModel then
+		clearHighlights()
+		hideUnitActionWindow()
+		closeCityNameDialog()
+		selectedUnitId = nil
+		selectedUnitModel = nil
+		setHudContextForCity(cityModel)
+		return
+	end
+
 	local tile = findTile(target)
 	if tile then
 		if movementMode then
@@ -929,9 +1251,12 @@ else
 end
 
 localPlayer:GetAttributeChangedSignal("CountryName"):Connect(function()
+	updateGameHudCountry()
+
 	if localPlayer:GetAttribute("CountryName") then
 		hideCountryMenu()
 	end
 end)
 
+ensureGameHud()
 showCountryMenu()
