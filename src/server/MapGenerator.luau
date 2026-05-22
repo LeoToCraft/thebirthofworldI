@@ -72,7 +72,7 @@ local function createTile(parent: Instance, x: number, z: number, biomeName: str
 	local biome = MapConfig.Biomes[biomeName]
 
 	local tile = Instance.new("Part")
-	tile.Name = string.format("%s_%02d_%02d", biomeName, x, z)
+	tile.Name = string.format("Tile_%03d_%03d", x, z)
 	tile.Anchored = true
 	tile.Size = Vector3.new(tileConfig.Width, height, tileConfig.Length)
 	tile.Position = getTilePosition(x, z, height)
