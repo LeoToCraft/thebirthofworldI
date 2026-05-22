@@ -47,11 +47,11 @@ local function chooseTile(x: number, z: number): (string, number)
 		return "Mountain", getMountainHeight(elevation, mountainShape)
 	end
 
-	if temperature < -0.28 then
+	if temperature < -0.42 then
 		return "Winter", MapConfig.Tile.Height
 	end
 
-	if moisture < -0.38 then
+	if moisture < -0.28 then
 		return "Sand", MapConfig.Tile.Height
 	end
 

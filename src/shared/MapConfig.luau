@@ -40,8 +40,8 @@ MapConfig.Biomes = {
 		DisplayName = "Mountain",
 		Color = Color3.fromRGB(104, 105, 99),
 		Material = Enum.Material.Rock,
-		MinHeight = 1,
-		MaxHeight = 5,
+		MinHeight = 2,
+		MaxHeight = 8,
 	},
 }
 
