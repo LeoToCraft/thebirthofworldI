@@ -4,6 +4,7 @@ CityConfig.Starting = {
 	Population = 1,
 	Food = 0,
 	Production = 0,
+	Health = 260,
 }
 
 CityConfig.Economy = {

@@ -22,6 +22,7 @@ local selectedCityModel: Model? = nil
 local selectionHighlight: Highlight? = nil
 local movementMode = false
 local attackMode = false
+local attachMode = false
 local ignoreNextWorldClick = false
 local healthBarConnections: { [Model]: { RBXScriptConnection } } = {}
 local unitActionGui: ScreenGui? = nil
@@ -73,6 +74,8 @@ local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "BuildImprovement", Text = "Улучшить ресурс", BuilderOnly = true },
 	{ Id = "Attack", Text = "Атаковать", AttackOnly = true },
+	{ Id = "AttachTo", Text = "Прикрепить" },
+	{ Id = "Detach", Text = "Открепить", AttachedOnly = true },
 	{ Id = "Move", Text = "Переместить" },
 	{ Id = "Rest", Text = "Отдых" },
 	{ Id = "Fortify", Text = "Укрепиться" },
@@ -468,6 +471,23 @@ local function showAttackTargetsForSelectedUnit()
 				local tile = getTile(x, z)
 				if distance >= 1 and distance <= range and tile then
 					createAttackHighlight(tile)
+				end
+			end
+		end
+	end
+
+	local citiesFolder = getCitiesFolder()
+	if citiesFolder then
+		for _, city in citiesFolder:GetChildren() do
+			if city:IsA("Model") and city:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+				local x = city:GetAttribute("GridX")
+				local z = city:GetAttribute("GridZ")
+				if typeof(x) == "number" and typeof(z) == "number" then
+					local distance = math.abs(x - originX) + math.abs(z - originZ)
+					local tile = getTile(x, z)
+					if distance >= 1 and distance <= range and tile then
+						createAttackHighlight(tile)
+					end
 				end
 			end
 		end
@@ -898,6 +918,8 @@ local function setHudContextForCity(model: Model)
 	local population = model:GetAttribute("Population")
 	local food = model:GetAttribute("Food")
 	local production = model:GetAttribute("Production")
+	local health = model:GetAttribute("Health")
+	local maxHealth = model:GetAttribute("MaxHealth")
 	local x = model:GetAttribute("GridX")
 	local z = model:GetAttribute("GridZ")
 
@@ -905,7 +927,9 @@ local function setHudContextForCity(model: Model)
 	local subtitleCountry = typeof(countryName) == "string" and countryName or "Неизвестная страна"
 	local location = typeof(x) == "number" and typeof(z) == "number" and string.format("Клетка %d:%d", x, z) or "Клетка не выбрана"
 	local stats = string.format(
-		"Население %d   Пища %d   Производство %d",
+		"HP %d/%d   Население %d   Пища %d   Производство %d",
+		typeof(health) == "number" and health or 0,
+		typeof(maxHealth) == "number" and maxHealth or 0,
 		typeof(population) == "number" and population or 0,
 		typeof(food) == "number" and food or 0,
 		typeof(production) == "number" and production or 0
@@ -1428,6 +1452,7 @@ end
 local function hideUnitActionWindow()
 	movementMode = false
 	attackMode = false
+	attachMode = false
 
 	if unitActionWindow then
 		unitActionWindow.Visible = false
@@ -1744,18 +1769,29 @@ local function handleUnitAction(actionId: string, actionText: string)
 	if actionId == "Move" then
 		movementMode = true
 		attackMode = false
+		attachMode = false
 		clearMovementHighlights()
 		showMovementForSelectedUnit()
-		setActionStatus("Выберите подсвеченную клетку")
+		setActionStatus("Выберите клетку назначения")
 		return
 	end
 
 	if actionId == "Attack" then
 		movementMode = false
 		attackMode = true
+		attachMode = false
 		clearMovementHighlights()
 		showAttackTargetsForSelectedUnit()
-		setActionStatus("Выберите вражеский юнит")
+		setActionStatus("Выберите вражеский юнит или город")
+		return
+	end
+
+	if actionId == "AttachTo" then
+		movementMode = false
+		attackMode = false
+		attachMode = true
+		clearMovementHighlights()
+		setActionStatus("Выберите свой юнит для сопровождения")
 		return
 	end
 
@@ -1766,6 +1802,7 @@ local function handleUnitAction(actionId: string, actionText: string)
 
 	movementMode = false
 	attackMode = false
+	attachMode = false
 	clearMovementHighlights()
 
 	if selectedUnitId then
@@ -1838,7 +1875,8 @@ local function showUnitActionWindow(model: Model)
 	for _, action in ACTION_BUTTONS do
 		if (not action.SettlerOnly or unitType == "Settler")
 			and (not action.BuilderOnly or unitType == "Builder")
-			and (not action.AttackOnly or (unit and unit.Attack > 0)) then
+			and (not action.AttackOnly or (unit and unit.Attack > 0))
+			and (not action.AttachedOnly or model:GetAttribute("AttachedToUnitId") ~= nil) then
 			order += 1
 			createActionButton(action.Id, action.Text, order)
 		end
@@ -1866,6 +1904,7 @@ local function selectUnit(model: Model)
 	hideCityProductionWindow()
 	movementMode = true
 	attackMode = false
+	attachMode = false
 
 	selectedUnitModel = model
 	selectedUnitId = model:GetAttribute("UnitId") :: string
@@ -1913,6 +1952,34 @@ local function requestAttack(targetModel: Model)
 	clearSelection()
 end
 
+local function requestAttackCity(targetCity: Model)
+	if not selectedUnitId or not attackMode then
+		return
+	end
+
+	local cityId = targetCity:GetAttribute("CityId")
+	if typeof(cityId) ~= "string" then
+		return
+	end
+
+	unitActionEvent:FireServer(selectedUnitId, "AttackCity", cityId)
+	clearSelection()
+end
+
+local function requestAttach(targetModel: Model)
+	if not selectedUnitId or not attachMode or targetModel == selectedUnitModel then
+		return
+	end
+
+	local targetUnitId = targetModel:GetAttribute("UnitId")
+	if typeof(targetUnitId) ~= "string" then
+		return
+	end
+
+	unitActionEvent:FireServer(selectedUnitId, "AttachTo", targetUnitId)
+	clearSelection()
+end
+
 mouse.Button1Down:Connect(function()
 	if ignoreNextWorldClick then
 		ignoreNextWorldClick = false
@@ -1924,7 +1991,11 @@ mouse.Button1Down:Connect(function()
 
 	if unitModel then
 		if isOwnedUnit(unitModel) then
-			selectUnit(unitModel)
+			if attachMode then
+				requestAttach(unitModel)
+			else
+				selectUnit(unitModel)
+			end
 		elseif attackMode then
 			requestAttack(unitModel)
 		end
@@ -1933,6 +2004,11 @@ mouse.Button1Down:Connect(function()
 
 	local cityModel = findCityModel(target)
 	if cityModel then
+		if attackMode and cityModel:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+			requestAttackCity(cityModel)
+			return
+		end
+
 		clearHighlights()
 		hideUnitActionWindow()
 		closeCityNameDialog()

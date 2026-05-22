@@ -21,6 +21,8 @@ local CREATE_UNIT_EVENT_NAME = "CreateUnit"
 local HEALTH_BAR_NAME = "UnitHealthBar"
 local IMPROVEMENTS_FOLDER_NAME = "Improvements"
 local BOT_ACTION_SECONDS = 1.5
+local AUTO_MOVE_STEP = 2
+local BOT_PRODUCTION_SECONDS = 5
 
 local unitsById = {}
 local occupiedTiles = {}
@@ -163,6 +165,7 @@ local function setUnitAttributes(instance: Instance, unitId: string, player: any
 	instance:SetAttribute("IsMoving", false)
 	instance:SetAttribute("Fortified", false)
 	instance:SetAttribute("FortifyUntilHealed", false)
+	instance:SetAttribute("AttachedToUnitId", nil)
 	instance:SetAttribute("ActionState", "Ready")
 end
 
@@ -489,6 +492,8 @@ local function createUnit(player: any, unitType: string, x: number, z: number): 
 		GridX = x,
 		GridZ = z,
 		IsMoving = false,
+		MoveToken = 0,
+		AttachedToUnitId = nil,
 	}
 	occupiedTiles[getTileKey(x, z)] = unitId
 
@@ -508,6 +513,85 @@ local function findOpenAdjacentTile(unitType: string, x: number, z: number): (nu
 	end
 
 	return nil, nil
+end
+
+local function findOpenNeighborNear(unitType: string, x: number, z: number): (number?, number?)
+	local offsets = {
+		{ X = 1, Z = 0 },
+		{ X = -1, Z = 0 },
+		{ X = 0, Z = 1 },
+		{ X = 0, Z = -1 },
+		{ X = 1, Z = 1 },
+		{ X = 1, Z = -1 },
+		{ X = -1, Z = 1 },
+		{ X = -1, Z = -1 },
+	}
+
+	for _, offset in offsets do
+		local targetX = x + offset.X
+		local targetZ = z + offset.Z
+		if isOpenForUnit(unitType, targetX, targetZ) then
+			return targetX, targetZ
+		end
+	end
+
+	return nil, nil
+end
+
+local function buildPath(unitType: string, startX: number, startZ: number, targetX: number, targetZ: number): { { X: number, Z: number } }?
+	local targetTile = getTile(targetX, targetZ)
+	if not targetTile or not canUnitEnter(unitType, targetTile) or occupiedTiles[getTileKey(targetX, targetZ)] then
+		return nil
+	end
+
+	local startKey = getTileKey(startX, startZ)
+	local targetKey = getTileKey(targetX, targetZ)
+	local queue = { { X = startX, Z = startZ } }
+	local head = 1
+	local visited = { [startKey] = true }
+	local cameFrom: { [string]: string } = {}
+	local positionsByKey = { [startKey] = { X = startX, Z = startZ } }
+	local directions = {
+		{ X = 1, Z = 0 },
+		{ X = -1, Z = 0 },
+		{ X = 0, Z = 1 },
+		{ X = 0, Z = -1 },
+	}
+
+	while head <= #queue do
+		local current = queue[head]
+		head += 1
+		local currentKey = getTileKey(current.X, current.Z)
+
+		if currentKey == targetKey then
+			local path = {}
+			local pathKey = targetKey
+
+			while pathKey ~= startKey do
+				table.insert(path, 1, positionsByKey[pathKey])
+				pathKey = cameFrom[pathKey]
+			end
+
+			return path
+		end
+
+		for _, direction in directions do
+			local nextX = current.X + direction.X
+			local nextZ = current.Z + direction.Z
+			local nextKey = getTileKey(nextX, nextZ)
+			if not visited[nextKey] then
+				local tile = getTile(nextX, nextZ)
+				if tile and canUnitEnter(unitType, tile) and not occupiedTiles[nextKey] then
+					visited[nextKey] = true
+					cameFrom[nextKey] = currentKey
+					positionsByKey[nextKey] = { X = nextX, Z = nextZ }
+					table.insert(queue, positionsByKey[nextKey])
+				end
+			end
+		end
+	end
+
+	return nil
 end
 
 local function getImprovementsFolder(): Folder
@@ -588,17 +672,21 @@ local function buildResourceImprovement(unitState)
 	setUnitActionState(unitState, "BuiltImprovement", false, false)
 end
 
-local function onCreateUnit(player: Player, cityId: string, unitType: string)
-	if typeof(cityId) ~= "string" or typeof(unitType) ~= "string" then
-		return
+local function isAllowedProducedUnit(unitType: string): boolean
+	if unitType ~= "Warrior" and unitType ~= "Settler" and unitType ~= "Builder" and unitType ~= "Archer" and unitType ~= "Scout" then
+		return false
 	end
 
-	if unitType ~= "Warrior" and unitType ~= "Settler" and unitType ~= "Builder" and unitType ~= "Archer" and unitType ~= "Scout" then
+	return true
+end
+
+local function startCityProduction(owner: any, cityId: string, unitType: string)
+	if not isAllowedProducedUnit(unitType) then
 		return
 	end
 
 	local cityState = CityService.GetCity(cityId)
-	if not cityState or cityState.OwnerUserId ~= player.UserId then
+	if not cityState or cityState.OwnerUserId ~= owner.UserId then
 		return
 	end
 
@@ -632,7 +720,7 @@ local function onCreateUnit(player: Player, cityId: string, unitType: string)
 
 		local x, z = findOpenAdjacentTile(unitType, currentCityState.GridX, currentCityState.GridZ)
 		if x and z then
-			createUnit(player, unitType, x, z)
+			createUnit(owner, unitType, x, z)
 		end
 
 		currentCityState.ProductionQueue = nil
@@ -641,6 +729,14 @@ local function onCreateUnit(player: Player, cityId: string, unitType: string)
 			currentCityState.Model:SetAttribute("ProductionSecondsLeft", 0)
 		end
 	end)
+end
+
+local function onCreateUnit(player: Player, cityId: string, unitType: string)
+	if typeof(cityId) ~= "string" or typeof(unitType) ~= "string" then
+		return
+	end
+
+	startCityProduction(player, cityId, unitType)
 end
 
 local function spawnStartingUnits(player: Player)
@@ -727,6 +823,29 @@ local function attackUnit(attackerUnitId: string, attackerState, targetUnitId: s
 	return true
 end
 
+local function attackCity(attackerState, cityId: string): boolean
+	local cityState = CityService.GetCity(cityId)
+	if not cityState or cityState.OwnerUserId == attackerState.OwnerUserId then
+		return false
+	end
+
+	local attackerConfig = UnitConfig.Types[attackerState.UnitType]
+	if not attackerConfig or attackerConfig.Attack <= 0 then
+		return false
+	end
+
+	local range = attackerConfig.Range or 1
+	local distance = math.abs(cityState.GridX - attackerState.GridX) + math.abs(cityState.GridZ - attackerState.GridZ)
+	if distance < 1 or distance > range then
+		return false
+	end
+
+	CityService.DamageCity(attackerState.OwnerUserId, cityId, attackerConfig.Attack)
+	setUnitActionState(attackerState, "AttackedCity", false, false)
+
+	return true
+end
+
 local function healUnit(unitState, amount: number)
 	local maxHealth = unitState.Model:GetAttribute("MaxHealth")
 	local currentHealth = unitState.Model:GetAttribute("Health")
@@ -742,6 +861,81 @@ function setUnitActionState(unitState, actionState: string, fortified: boolean, 
 	unitState.Model:SetAttribute("ActionState", actionState)
 	unitState.Model:SetAttribute("Fortified", fortified)
 	unitState.Model:SetAttribute("FortifyUntilHealed", fortifyUntilHealed)
+end
+
+local moveUnitToTile
+
+local function moveAttachedFollowers(leaderUnitId: string, leaderState)
+	for followerUnitId, followerState in unitsById do
+		if followerState.AttachedToUnitId == leaderUnitId and not followerState.IsMoving then
+			local targetX, targetZ = findOpenNeighborNear(followerState.UnitType, leaderState.GridX, leaderState.GridZ)
+			if targetX and targetZ then
+				moveUnitToTile(followerUnitId, followerState, targetX, targetZ, false)
+			end
+		end
+	end
+end
+
+function moveUnitToTile(unitId: string, unitState, targetX: number, targetZ: number, moveFollowers: boolean?): boolean
+	local tile = getTile(targetX, targetZ)
+	if not tile or not canUnitEnter(unitState.UnitType, tile) or occupiedTiles[getTileKey(targetX, targetZ)] then
+		return false
+	end
+
+	occupiedTiles[getTileKey(unitState.GridX, unitState.GridZ)] = nil
+	occupiedTiles[getTileKey(targetX, targetZ)] = unitId
+
+	unitState.GridX = targetX
+	unitState.GridZ = targetZ
+	unitState.IsMoving = true
+	unitState.Model:SetAttribute("IsMoving", true)
+	setUnitActionState(unitState, "Moving", false, false)
+	setUnitGridAttributes(unitState.Model, targetX, targetZ)
+
+	tweenModelToTile(unitState.Model, tile, function()
+		if unitsById[unitId] == unitState then
+			unitState.IsMoving = false
+			unitState.Model:SetAttribute("IsMoving", false)
+			if moveFollowers ~= false then
+				moveAttachedFollowers(unitId, unitState)
+			end
+		end
+	end)
+
+	return true
+end
+
+local function startAutoMove(unitId: string, unitState, targetX: number, targetZ: number)
+	unitState.MoveToken = (unitState.MoveToken or 0) + 1
+	local moveToken = unitState.MoveToken
+
+	task.spawn(function()
+		while unitsById[unitId] == unitState and unitState.MoveToken == moveToken do
+			if unitState.GridX == targetX and unitState.GridZ == targetZ then
+				setUnitActionState(unitState, "Ready", false, false)
+				return
+			end
+
+			if unitState.IsMoving then
+				task.wait(0.1)
+				continue
+			end
+
+			local path = buildPath(unitState.UnitType, unitState.GridX, unitState.GridZ, targetX, targetZ)
+			if not path or #path == 0 then
+				setUnitActionState(unitState, "MoveBlocked", false, false)
+				return
+			end
+
+			local step = path[math.min(AUTO_MOVE_STEP, #path)]
+			if not moveUnitToTile(unitId, unitState, step.X, step.Z, true) then
+				setUnitActionState(unitState, "MoveBlocked", false, false)
+				return
+			end
+
+			task.wait(UnitConfig.Animation.MoveTime + BOT_ACTION_SECONDS)
+		end
+	end)
 end
 
 local function onMoveUnit(player: Player, unitId: string, targetX: number, targetZ: number)
@@ -761,9 +955,8 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 		return
 	end
 
-	local unit = UnitConfig.Types[unitState.UnitType]
 	local distance = math.abs(targetX - unitState.GridX) + math.abs(targetZ - unitState.GridZ)
-	if distance < 1 or distance > unit.Movement then
+	if distance < 1 then
 		return
 	end
 
@@ -777,21 +970,12 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 		return
 	end
 
-	occupiedTiles[getTileKey(unitState.GridX, unitState.GridZ)] = nil
-	occupiedTiles[targetKey] = unitId
-
-	unitState.GridX = targetX
-	unitState.GridZ = targetZ
-	unitState.IsMoving = true
-	unitState.Model:SetAttribute("IsMoving", true)
-	setUnitActionState(unitState, "Ready", false, false)
-	setUnitGridAttributes(unitState.Model, targetX, targetZ)
-	tweenModelToTile(unitState.Model, tile, function()
-		if unitsById[unitId] == unitState then
-			unitState.IsMoving = false
-			unitState.Model:SetAttribute("IsMoving", false)
-		end
-	end)
+	if distance <= AUTO_MOVE_STEP then
+		unitState.MoveToken = (unitState.MoveToken or 0) + 1
+		moveUnitToTile(unitId, unitState, targetX, targetZ, true)
+	else
+		startAutoMove(unitId, unitState, targetX, targetZ)
+	end
 end
 
 local function onUnitAction(player: Player, unitId: string, actionId: string, actionValue: any)
@@ -837,6 +1021,26 @@ local function onUnitAction(player: Player, unitId: string, actionId: string, ac
 		if targetState then
 			attackUnit(unitId, unitState, actionValue, targetState)
 		end
+	elseif actionId == "AttackCity" then
+		if typeof(actionValue) == "string" then
+			attackCity(unitState, actionValue)
+		end
+	elseif actionId == "AttachTo" then
+		if typeof(actionValue) ~= "string" or actionValue == unitId then
+			return
+		end
+
+		local targetState = unitsById[actionValue]
+		local distance = targetState and (math.abs(targetState.GridX - unitState.GridX) + math.abs(targetState.GridZ - unitState.GridZ)) or math.huge
+		if targetState and targetState.OwnerUserId == unitState.OwnerUserId and targetState.AttachedToUnitId ~= unitId and distance <= 3 then
+			unitState.AttachedToUnitId = actionValue
+			unitState.Model:SetAttribute("AttachedToUnitId", actionValue)
+			setUnitActionState(unitState, "Attached", false, false)
+		end
+	elseif actionId == "Detach" then
+		unitState.AttachedToUnitId = nil
+		unitState.Model:SetAttribute("AttachedToUnitId", nil)
+		setUnitActionState(unitState, "Detached", false, false)
 	end
 end
 
@@ -859,6 +1063,25 @@ local function findBotAttackTarget(unitState): (string?, any?)
 	return nil, nil
 end
 
+local function findBotCityTarget(unitState): string?
+	local unit = UnitConfig.Types[unitState.UnitType]
+	if not unit or unit.Attack <= 0 then
+		return nil
+	end
+
+	local range = unit.Range or 1
+	for cityId, cityState in CityService.GetCities() do
+		if cityState.OwnerUserId ~= unitState.OwnerUserId then
+			local distance = math.abs(cityState.GridX - unitState.GridX) + math.abs(cityState.GridZ - unitState.GridZ)
+			if distance >= 1 and distance <= range then
+				return cityId
+			end
+		end
+	end
+
+	return nil
+end
+
 local function spawnBotUnits()
 	local spawnPoints = {
 		{ X = 16, Z = 16 },
@@ -879,6 +1102,34 @@ local function spawnBotUnits()
 		local warriorX, warriorZ = findSpawnTile("Warrior", point.X + 2, point.Z)
 		if warriorX and warriorZ then
 			createUnit(bot :: any, "Warrior", warriorX, warriorZ)
+		end
+	end
+end
+
+local function getBotOwner(ownerUserId: number)
+	for _, owner in botOwners do
+		if owner.UserId == ownerUserId then
+			return owner
+		end
+	end
+
+	return nil
+end
+
+local function startBotProductionLoop()
+	local random = Random.new()
+	local producedUnits = { "Warrior", "Archer", "Scout", "Builder" }
+
+	while true do
+		task.wait(BOT_PRODUCTION_SECONDS)
+
+		for cityId, cityState in CityService.GetCities() do
+			if cityState.OwnerUserId < 0 and cityState.ProductionQueue == nil then
+				local botOwner = getBotOwner(cityState.OwnerUserId)
+				if botOwner then
+					startCityProduction(botOwner, cityId, producedUnits[random:NextInteger(1, #producedUnits)])
+				end
+			end
 		end
 	end
 end
@@ -911,6 +1162,11 @@ local function moveBotUnits()
 
 				local targetUnitId, targetState = findBotAttackTarget(unitState)
 				if targetUnitId and targetState and attackUnit(unitId, unitState, targetUnitId, targetState) then
+					continue
+				end
+
+				local targetCityId = findBotCityTarget(unitState)
+				if targetCityId and attackCity(unitState, targetCityId) then
 					continue
 				end
 
@@ -964,6 +1220,7 @@ function UnitService.Start()
 
 	spawnBotUnits()
 	task.spawn(moveBotUnits)
+	task.spawn(startBotProductionLoop)
 end
 
 return UnitService

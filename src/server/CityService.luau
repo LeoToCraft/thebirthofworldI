@@ -16,6 +16,7 @@ local REMOTES_FOLDER_NAME = "Remotes"
 local CREATE_COUNTRY_EVENT_NAME = "CreateCountry"
 local DIPLOMACY_ACTION_EVENT_NAME = "DiplomacyAction"
 local COUNTRY_NAME_ATTRIBUTE = "CountryName"
+local CITY_HEALTH_BAR_NAME = "CityHealthBar"
 
 local citiesById = {}
 local cityCountByOwner = {}
@@ -237,6 +238,125 @@ local function addCityNameplate(model: Model, cityName: string, countryName: str
 	label.Parent = nameplate
 end
 
+local function getCityMaxHealth(model: Model): number
+	local maxHealth = model:GetAttribute("MaxHealth")
+	if typeof(maxHealth) == "number" and maxHealth > 0 then
+		return maxHealth
+	end
+
+	return CityConfig.Starting.Health
+end
+
+local function updateCityHealthBar(model: Model)
+	local anchor = model:FindFirstChild("CityNameAnchor")
+	local adornee = anchor and anchor:IsA("BasePart") and anchor or model.PrimaryPart or getFirstBasePart(model)
+	if not adornee then
+		return
+	end
+
+	local healthBar = adornee:FindFirstChild(CITY_HEALTH_BAR_NAME)
+	if not healthBar or not healthBar:IsA("BillboardGui") then
+		return
+	end
+
+	local container = healthBar:FindFirstChild("Container")
+	local fill = container and container:FindFirstChild("Fill")
+	local label = healthBar:FindFirstChild("HealthText")
+	if not container or not container:IsA("Frame") or not fill or not fill:IsA("Frame") then
+		return
+	end
+
+	local maxHealth = getCityMaxHealth(model)
+	local health = model:GetAttribute("Health")
+	if typeof(health) ~= "number" then
+		health = maxHealth
+	end
+
+	local ratio = math.clamp(health / maxHealth, 0, 1)
+	fill.Size = UDim2.fromScale(ratio, 1)
+
+	if ratio > 0.5 then
+		fill.BackgroundColor3 = Color3.fromRGB(82, 214, 116)
+	elseif ratio > 0.25 then
+		fill.BackgroundColor3 = Color3.fromRGB(245, 195, 75)
+	else
+		fill.BackgroundColor3 = Color3.fromRGB(231, 74, 62)
+	end
+
+	if label and label:IsA("TextLabel") then
+		label.Text = string.format("%d/%d", math.max(0, math.floor(health + 0.5)), math.floor(maxHealth + 0.5))
+	end
+end
+
+local function addCityHealthBar(model: Model)
+	local anchor = model:FindFirstChild("CityNameAnchor")
+	local adornee = anchor and anchor:IsA("BasePart") and anchor or model.PrimaryPart or getFirstBasePart(model)
+	if not adornee then
+		return
+	end
+
+	local existing = adornee:FindFirstChild(CITY_HEALTH_BAR_NAME)
+	if existing then
+		existing:Destroy()
+	end
+
+	local healthBar = Instance.new("BillboardGui")
+	healthBar.Name = CITY_HEALTH_BAR_NAME
+	healthBar.AlwaysOnTop = true
+	healthBar.MaxDistance = 420
+	healthBar.Size = UDim2.fromOffset(110, 18)
+	healthBar.StudsOffset = Vector3.new(0, -0.35, 0)
+	healthBar.Parent = adornee
+
+	local container = Instance.new("Frame")
+	container.Name = "Container"
+	container.AnchorPoint = Vector2.new(0.5, 1)
+	container.BackgroundColor3 = Color3.fromRGB(34, 34, 38)
+	container.BorderSizePixel = 0
+	container.Position = UDim2.fromScale(0.5, 1)
+	container.Size = UDim2.new(1, 0, 0, 8)
+	container.Parent = healthBar
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Transparency = 0.25
+	stroke.Thickness = 1
+	stroke.Parent = container
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.BackgroundColor3 = Color3.fromRGB(82, 214, 116)
+	fill.BorderSizePixel = 0
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.Parent = container
+
+	local label = Instance.new("TextLabel")
+	label.Name = "HealthText"
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.Position = UDim2.fromOffset(0, 0)
+	label.Size = UDim2.new(1, 0, 0, 10)
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.TextScaled = true
+	label.TextStrokeTransparency = 0.35
+	label.Parent = healthBar
+
+	local healthConnection = model:GetAttributeChangedSignal("Health"):Connect(function()
+		updateCityHealthBar(model)
+	end)
+	local maxHealthConnection = model:GetAttributeChangedSignal("MaxHealth"):Connect(function()
+		updateCityHealthBar(model)
+	end)
+	local destroyingConnection
+	destroyingConnection = model.Destroying:Connect(function()
+		healthConnection:Disconnect()
+		maxHealthConnection:Disconnect()
+		destroyingConnection:Disconnect()
+	end)
+
+	updateCityHealthBar(model)
+end
+
 local function placeCityModel(model: Model, tile: BasePart)
 	local boundingBoxCFrame, size = model:GetBoundingBox()
 	local tileTopY = tile.Position.Y + tile.Size.Y / 2
@@ -335,6 +455,8 @@ local function setCityAttributes(model: Model, cityId: string, player: any, city
 	model:SetAttribute("Population", CityConfig.Starting.Population)
 	model:SetAttribute("Food", CityConfig.Starting.Food)
 	model:SetAttribute("Production", CityConfig.Starting.Production)
+	model:SetAttribute("MaxHealth", CityConfig.Starting.Health)
+	model:SetAttribute("Health", CityConfig.Starting.Health)
 
 	for _, descendant in model:GetDescendants() do
 		if descendant:IsA("BasePart") then
@@ -640,6 +762,7 @@ function CityService.FoundCity(player: any, x: number, z: number, requestedCityN
 	setCityAttributes(cityModel, cityId, player, cityName, countryName, x, z)
 	setCityYieldAttributes(cityModel, tile)
 	addCityNameplate(cityModel, cityName, countryName, tile)
+	addCityHealthBar(cityModel)
 	cityModel.Parent = getCitiesFolder()
 	tile:SetAttribute("HasCity", true)
 	tile:SetAttribute("CityId", cityId)
@@ -653,6 +776,8 @@ function CityService.FoundCity(player: any, x: number, z: number, requestedCityN
 		Population = CityConfig.Starting.Population,
 		Food = CityConfig.Starting.Food,
 		Production = CityConfig.Starting.Production,
+		Health = CityConfig.Starting.Health,
+		MaxHealth = CityConfig.Starting.Health,
 		FoodPerTurn = cityModel:GetAttribute("FoodPerTurn"),
 		ProductionPerTurn = cityModel:GetAttribute("ProductionPerTurn"),
 		GoldPerTurn = cityModel:GetAttribute("GoldPerTurn"),
@@ -672,6 +797,50 @@ end
 
 function CityService.GetCities()
 	return citiesById
+end
+
+function CityService.DamageCity(attackerOwnerUserId: number, cityId: string, amount: number): boolean
+	local cityState = citiesById[cityId]
+	if not cityState or cityState.OwnerUserId == attackerOwnerUserId or amount <= 0 then
+		return false
+	end
+
+	if not CityService.AreAtWar(attackerOwnerUserId, cityState.OwnerUserId) then
+		CityService.SetWar(attackerOwnerUserId, cityState.OwnerUserId, true)
+	end
+
+	local nextHealth = math.max(0, (cityState.Health or CityConfig.Starting.Health) - amount)
+	cityState.Health = nextHealth
+
+	if cityState.Model then
+		cityState.Model:SetAttribute("Health", nextHealth)
+	end
+
+	if nextHealth > 0 then
+		return true
+	end
+
+	local tile = getTile(cityState.GridX, cityState.GridZ)
+	if tile then
+		tile:SetAttribute("HasCity", false)
+		tile:SetAttribute("CityId", nil)
+	end
+
+	local territoryFolder = getTerritoryFolder():FindFirstChild(cityId)
+	if territoryFolder then
+		territoryFolder:Destroy()
+	end
+
+	if cityState.Model then
+		cityState.Model:Destroy()
+	end
+
+	citiesById[cityId] = nil
+	for _, existingPlayer in Players:GetPlayers() do
+		syncPlayerDiplomacy(existingPlayer)
+	end
+
+	return true
 end
 
 function CityService.RefreshYieldsNear(ownerUserId: number, x: number, z: number)
