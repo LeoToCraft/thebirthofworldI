@@ -6,7 +6,15 @@ ResourceConfig.Generation = {
 
 ResourceConfig.Visual = {
 	MaxSize = 1.35,
+	ImprovedMaxSize = 2.25,
 	HeightOffset = 0.06,
+	ImprovedHeightOffset = -0.08,
+	ImprovedYOffsetByType = {
+		Gold = -0.16,
+		Iron = -0.16,
+		Stone = -0.16,
+		Wood = -0.28,
+	},
 }
 
 ResourceConfig.Types = {

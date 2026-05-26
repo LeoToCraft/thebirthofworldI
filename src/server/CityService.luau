@@ -15,6 +15,7 @@ local TERRITORY_FOLDER_NAME = "CityBorders"
 local REMOTES_FOLDER_NAME = "Remotes"
 local CREATE_COUNTRY_EVENT_NAME = "CreateCountry"
 local DIPLOMACY_ACTION_EVENT_NAME = "DiplomacyAction"
+local DELETE_CITY_EVENT_NAME = "DeleteCity"
 local COUNTRY_NAME_ATTRIBUTE = "CountryName"
 local CITY_HEALTH_BAR_NAME = "CityHealthBar"
 
@@ -95,6 +96,26 @@ local function getOrCreateDiplomacyActionEvent(): RemoteEvent
 	newDiplomacyActionEvent.Parent = remotesFolder
 
 	return newDiplomacyActionEvent
+end
+
+local function getOrCreateDeleteCityEvent(): RemoteEvent
+	local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = REMOTES_FOLDER_NAME
+		remotesFolder.Parent = ReplicatedStorage
+	end
+
+	local deleteCityEvent = remotesFolder:FindFirstChild(DELETE_CITY_EVENT_NAME)
+	if deleteCityEvent and deleteCityEvent:IsA("RemoteEvent") then
+		return deleteCityEvent
+	end
+
+	local newDeleteCityEvent = Instance.new("RemoteEvent")
+	newDeleteCityEvent.Name = DELETE_CITY_EVENT_NAME
+	newDeleteCityEvent.Parent = remotesFolder
+
+	return newDeleteCityEvent
 end
 
 local function getTile(x: number, z: number): BasePart?
@@ -493,52 +514,87 @@ local function getCountryColor(userId: number): Color3
 	return Color3.fromHSV(hue, 0.58, 0.95)
 end
 
-local function isTerritoryEdge(centerX: number, centerZ: number, x: number, z: number): boolean
-	local radius = CityConfig.Territory.Radius
-	local distance = math.max(math.abs(x - centerX), math.abs(z - centerZ))
+local function getOwnerTerritoryFolderName(ownerUserId: number): string
+	if ownerUserId < 0 then
+		return "Owner_n" .. tostring(math.abs(ownerUserId))
+	end
 
-	return distance == radius
+	return "Owner_p" .. tostring(ownerUserId)
 end
 
-local function createTerritoryMarker(cityId: string, ownerUserId: number, centerX: number, centerZ: number)
+local function getTerritoryKey(x: number, z: number): string
+	return tostring(x) .. ":" .. tostring(z)
+end
+
+local function addCityTerritoryToSet(territoryTiles: { [string]: { X: number, Z: number } }, centerX: number, centerZ: number)
+	local radius = CityConfig.Territory.Radius
+
+	for x = centerX - radius, centerX + radius do
+		for z = centerZ - radius, centerZ + radius do
+			if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length then
+				territoryTiles[getTerritoryKey(x, z)] = { X = x, Z = z }
+			end
+		end
+	end
+end
+
+local function isTerritoryEdge(territoryTiles: { [string]: { X: number, Z: number } }, x: number, z: number): boolean
+	local directions = {
+		{ X = 1, Z = 0 },
+		{ X = -1, Z = 0 },
+		{ X = 0, Z = 1 },
+		{ X = 0, Z = -1 },
+	}
+
+	for _, direction in directions do
+		if not territoryTiles[getTerritoryKey(x + direction.X, z + direction.Z)] then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function rebuildOwnerTerritory(ownerUserId: number)
 	local parent = getTerritoryFolder()
-	local existing = parent:FindFirstChild(cityId)
+	local folderName = getOwnerTerritoryFolderName(ownerUserId)
+	local existing = parent:FindFirstChild(folderName)
 	if existing then
 		existing:Destroy()
 	end
 
 	local folder = Instance.new("Folder")
-	folder.Name = cityId
+	folder.Name = folderName
 	folder:SetAttribute("OwnerUserId", ownerUserId)
-	folder:SetAttribute("GridX", centerX)
-	folder:SetAttribute("GridZ", centerZ)
 	folder.Parent = parent
 
+	local territoryTiles = {}
+	for _, cityState in citiesById do
+		if cityState.OwnerUserId == ownerUserId then
+			addCityTerritoryToSet(territoryTiles, cityState.GridX, cityState.GridZ)
+		end
+	end
+
 	local color = getCountryColor(ownerUserId)
-	local radius = CityConfig.Territory.Radius
-	for x = centerX - radius, centerX + radius do
-		for z = centerZ - radius, centerZ + radius do
-			if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length then
-				local tile = getTile(x, z)
-				if tile then
-					local isEdge = isTerritoryEdge(centerX, centerZ, x, z)
-					local marker = Instance.new("Part")
-					marker.Name = isEdge and "Border" or "Territory"
-					marker.Anchored = true
-					marker.CanCollide = false
-					marker.CanQuery = false
-					marker.Color = color
-					marker.Material = Enum.Material.SmoothPlastic
-					marker.Size = Vector3.new(MapConfig.Tile.Width * 0.96, isEdge and 0.07 or 0.04, MapConfig.Tile.Length * 0.96)
-					marker.Transparency = isEdge and CityConfig.Territory.BorderTransparency or CityConfig.Territory.FillTransparency
-					marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.11, tile.Position.Z)
-					marker:SetAttribute("CityId", cityId)
-					marker:SetAttribute("OwnerUserId", ownerUserId)
-					marker:SetAttribute("GridX", x)
-					marker:SetAttribute("GridZ", z)
-					marker.Parent = folder
-				end
-			end
+
+	for _, position in territoryTiles do
+		local tile = getTile(position.X, position.Z)
+		if tile then
+			local isEdge = isTerritoryEdge(territoryTiles, position.X, position.Z)
+			local marker = Instance.new("Part")
+			marker.Name = isEdge and "Border" or "Territory"
+			marker.Anchored = true
+			marker.CanCollide = false
+			marker.CanQuery = false
+			marker.Color = color
+			marker.Material = Enum.Material.SmoothPlastic
+			marker.Size = Vector3.new(MapConfig.Tile.Width * 0.96, isEdge and 0.07 or 0.04, MapConfig.Tile.Length * 0.96)
+			marker.Transparency = isEdge and CityConfig.Territory.BorderTransparency or CityConfig.Territory.FillTransparency
+			marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.11, tile.Position.Z)
+			marker:SetAttribute("OwnerUserId", ownerUserId)
+			marker:SetAttribute("GridX", position.X)
+			marker:SetAttribute("GridZ", position.Z)
+			marker.Parent = folder
 		end
 	end
 end
@@ -723,6 +779,42 @@ local function onDiplomacyAction(player: Player, targetOwnerUserId: number, acti
 	end
 end
 
+local function removeCity(cityId: string)
+	local cityState = citiesById[cityId]
+	if not cityState then
+		return
+	end
+
+	local tile = getTile(cityState.GridX, cityState.GridZ)
+	if tile then
+		tile:SetAttribute("HasCity", false)
+		tile:SetAttribute("CityId", nil)
+	end
+
+	if cityState.Model then
+		cityState.Model:Destroy()
+	end
+
+	citiesById[cityId] = nil
+	rebuildOwnerTerritory(cityState.OwnerUserId)
+	for _, existingPlayer in Players:GetPlayers() do
+		syncPlayerDiplomacy(existingPlayer)
+	end
+end
+
+local function onDeleteCity(player: Player, cityId: string)
+	if typeof(cityId) ~= "string" then
+		return
+	end
+
+	local cityState = citiesById[cityId]
+	if not cityState or cityState.OwnerUserId ~= player.UserId then
+		return
+	end
+
+	removeCity(cityId)
+end
+
 function CityService.CanFoundCity(x: number, z: number): (boolean, string?)
 	local tile = getTile(x, z)
 	if not tile then
@@ -783,7 +875,7 @@ function CityService.FoundCity(player: any, x: number, z: number, requestedCityN
 		GoldPerTurn = cityModel:GetAttribute("GoldPerTurn"),
 	}
 	refreshCityYields(cityId)
-	createTerritoryMarker(cityId, player.UserId, x, z)
+	rebuildOwnerTerritory(player.UserId)
 	for _, existingPlayer in Players:GetPlayers() do
 		syncPlayerDiplomacy(existingPlayer)
 	end
@@ -826,16 +918,12 @@ function CityService.DamageCity(attackerOwnerUserId: number, cityId: string, amo
 		tile:SetAttribute("CityId", nil)
 	end
 
-	local territoryFolder = getTerritoryFolder():FindFirstChild(cityId)
-	if territoryFolder then
-		territoryFolder:Destroy()
-	end
-
 	if cityState.Model then
 		cityState.Model:Destroy()
 	end
 
 	citiesById[cityId] = nil
+	rebuildOwnerTerritory(cityState.OwnerUserId)
 	for _, existingPlayer in Players:GetPlayers() do
 		syncPlayerDiplomacy(existingPlayer)
 	end
@@ -871,6 +959,7 @@ function CityService.Start()
 	getTerritoryFolder()
 	getOrCreateCreateCountryEvent().OnServerEvent:Connect(onCreateCountry)
 	getOrCreateDiplomacyActionEvent().OnServerEvent:Connect(onDiplomacyAction)
+	getOrCreateDeleteCityEvent().OnServerEvent:Connect(onDeleteCity)
 
 	Players.PlayerAdded:Connect(function(player)
 		syncPlayerTreasury(player)

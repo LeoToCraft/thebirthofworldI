@@ -8,6 +8,7 @@ local Workspace = game:GetService("Workspace")
 local CityService = require(script.Parent.CityService)
 local CityConfig = require(ReplicatedStorage.Shared.CityConfig)
 local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
+local ResourceConfig = require(ReplicatedStorage.Shared.ResourceConfig)
 local UnitConfig = require(ReplicatedStorage.Shared.UnitConfig)
 
 local UnitService = {}
@@ -22,7 +23,10 @@ local HEALTH_BAR_NAME = "UnitHealthBar"
 local IMPROVEMENTS_FOLDER_NAME = "Improvements"
 local BOT_ACTION_SECONDS = 1.5
 local AUTO_MOVE_STEP = 2
-local BOT_PRODUCTION_SECONDS = 5
+local BOT_PRODUCTION_SECONDS = 2
+local BOT_UNIT_PRODUCTION_SECONDS = 7
+local BOT_MAX_UNITS_PER_OWNER = 10
+local BOT_MAX_BUILDERS_PER_OWNER = 2
 
 local unitsById = {}
 local occupiedTiles = {}
@@ -632,6 +636,186 @@ local function removeResourceVisual(resourceId: any)
 	end
 end
 
+local function getVisualBaseParts(instance: Instance): { BasePart }
+	local parts = {}
+	if instance:IsA("BasePart") then
+		table.insert(parts, instance)
+	end
+
+	for _, descendant in instance:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+		end
+	end
+
+	return parts
+end
+
+local function getVisualBounds(instance: Instance): (CFrame, Vector3)
+	if instance:IsA("Model") then
+		return instance:GetBoundingBox()
+	end
+
+	if instance:IsA("BasePart") then
+		return instance.CFrame, instance.Size
+	end
+
+	return CFrame.new(), Vector3.zero
+end
+
+local function getPartWorldCorner(part: BasePart, x: number, y: number, z: number): Vector3
+	return (part.CFrame * CFrame.new(
+		part.Size.X * x / 2,
+		part.Size.Y * y / 2,
+		part.Size.Z * z / 2
+	)).Position
+end
+
+local function getVisualMinY(instance: Instance): number?
+	local minY = nil
+
+	for _, part in getVisualBaseParts(instance) do
+		for _, x in { -1, 1 } do
+			for _, y in { -1, 1 } do
+				for _, z in { -1, 1 } do
+					local corner = getPartWorldCorner(part, x, y, z)
+					if minY == nil or corner.Y < minY then
+						minY = corner.Y
+					end
+				end
+			end
+		end
+	end
+
+	return minY
+end
+
+local function scaleVisualToTile(instance: Instance, maxSize: number)
+	local boundsCFrame, boundsSize = getVisualBounds(instance)
+	local largestAxis = math.max(boundsSize.X, boundsSize.Y, boundsSize.Z)
+	if largestAxis <= maxSize or largestAxis <= 0 then
+		return
+	end
+
+	local scale = maxSize / largestAxis
+	if instance:IsA("BasePart") then
+		instance.Size *= scale
+		return
+	end
+
+	for _, part in getVisualBaseParts(instance) do
+		local localCFrame = boundsCFrame:ToObjectSpace(part.CFrame)
+		local localPosition = localCFrame.Position * scale
+		local localRotation = localCFrame - localCFrame.Position
+		part.Size *= scale
+		part.CFrame = boundsCFrame * CFrame.new(localPosition) * localRotation
+	end
+end
+
+local function placeVisualOnTile(instance: Instance, tile: BasePart, heightOffset: number)
+	local tileTopY = tile.Position.Y + tile.Size.Y / 2
+	local targetPosition = Vector3.new(tile.Position.X, tileTopY, tile.Position.Z)
+
+	if instance:IsA("Model") then
+		local boundingBoxCFrame, size = getVisualBounds(instance)
+		local targetCenter = targetPosition + Vector3.new(0, size.Y / 2 + heightOffset, 0)
+		local delta = targetCenter - boundingBoxCFrame.Position
+		instance:PivotTo(CFrame.new(delta) * instance:GetPivot())
+
+		local minY = getVisualMinY(instance)
+		if minY then
+			instance:PivotTo(CFrame.new(0, tileTopY + heightOffset - minY, 0) * instance:GetPivot())
+		end
+	elseif instance:IsA("BasePart") then
+		instance.Position = targetPosition + Vector3.new(0, instance.Size.Y / 2 + heightOffset, 0)
+	end
+end
+
+local function prepareImprovementVisual(instance: Instance, resourceType: string, resourceId: any, tile: BasePart)
+	for _, descendant in instance:GetDescendants() do
+		if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+			descendant:Destroy()
+		end
+	end
+
+	for _, part in getVisualBaseParts(instance) do
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.CanTouch = false
+		part.Massless = true
+		part.AssemblyLinearVelocity = Vector3.zero
+		part.AssemblyAngularVelocity = Vector3.zero
+		part:SetAttribute("ResourceId", resourceId)
+		part:SetAttribute("ResourceType", resourceType)
+		part:SetAttribute("GridX", tile:GetAttribute("GridX"))
+		part:SetAttribute("GridZ", tile:GetAttribute("GridZ"))
+	end
+
+	instance:SetAttribute("ResourceId", resourceId)
+	instance:SetAttribute("ResourceType", resourceType)
+	instance:SetAttribute("GridX", tile:GetAttribute("GridX"))
+	instance:SetAttribute("GridZ", tile:GetAttribute("GridZ"))
+end
+
+local function createImprovementVisual(tile: BasePart, resourceType: string): Instance?
+	local resource = ResourceConfig.Types[resourceType]
+	if not resource then
+		return nil
+	end
+
+	local modelName = (resource.ModelName or string.lower(resourceType)) .. "_up"
+	local storedModel = ServerStorage:FindFirstChild(modelName)
+	if not storedModel then
+		return nil
+	end
+
+	local visual = storedModel:Clone()
+	if visual:IsA("Folder") then
+		local model = Instance.new("Model")
+		for _, child in visual:GetChildren() do
+			child.Parent = model
+		end
+		visual:Destroy()
+		visual = model
+	elseif not visual:IsA("Model") and not visual:IsA("BasePart") then
+		visual:Destroy()
+		return nil
+	end
+
+	visual.Name = modelName
+	prepareImprovementVisual(visual, resourceType, tile:GetAttribute("ResourceId"), tile)
+	if #getVisualBaseParts(visual) == 0 then
+		visual:Destroy()
+		return nil
+	end
+
+	visual.Parent = getImprovementsFolder()
+	scaleVisualToTile(visual, ResourceConfig.Visual.ImprovedMaxSize or ResourceConfig.Visual.MaxSize)
+	local yOffsetByType = ResourceConfig.Visual.ImprovedYOffsetByType or {}
+	local heightOffset = (ResourceConfig.Visual.ImprovedHeightOffset or ResourceConfig.Visual.HeightOffset) + (yOffsetByType[resourceType] or 0)
+	placeVisualOnTile(visual, tile, heightOffset)
+
+	return visual
+end
+
+local function createFallbackImprovementMarker(tile: BasePart, resourceType: string): BasePart
+	local resource = ResourceConfig.Types[resourceType]
+	local marker = Instance.new("Part")
+	marker.Name = resourceType .. "_up"
+	marker.Anchored = true
+	marker.CanCollide = false
+	marker.CanQuery = false
+	marker.Color = resource and resource.Color or Color3.fromRGB(140, 210, 120)
+	marker.Material = Enum.Material.SmoothPlastic
+	marker.Size = Vector3.new(0.8, 0.18, 0.8)
+	marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + marker.Size.Y / 2 + 0.08, tile.Position.Z)
+	prepareImprovementVisual(marker, resourceType, tile:GetAttribute("ResourceId"), tile)
+	marker.Parent = getImprovementsFolder()
+
+	return marker
+end
+
 local function buildResourceImprovement(unitState)
 	if unitState.UnitType ~= "Builder" then
 		return
@@ -643,8 +827,15 @@ local function buildResourceImprovement(unitState)
 		return
 	end
 
+	local resourceId = tile:GetAttribute("ResourceId")
+	local resourceType = tile:GetAttribute("ResourceType")
+	if typeof(resourceType) ~= "string" then
+		setUnitActionState(unitState, "BuildFailed", false, false)
+		return
+	end
+
 	tile:SetAttribute("ImprovedResource", true)
-	removeResourceVisual(tile:GetAttribute("ResourceId"))
+	removeResourceVisual(resourceId)
 	tile:SetAttribute("FoodYield", (tile:GetAttribute("FoodYield") or 0) + 1)
 	tile:SetAttribute("ProductionYield", (tile:GetAttribute("ProductionYield") or 0) + 1)
 	CityService.RefreshYieldsNear(unitState.OwnerUserId, unitState.GridX, unitState.GridZ)
@@ -655,19 +846,9 @@ local function buildResourceImprovement(unitState)
 		tile:GetAttribute("GoldYield") or 0
 	)
 
-	local marker = Instance.new("Part")
-	marker.Name = "Improvement"
-	marker.Anchored = true
-	marker.CanCollide = false
-	marker.CanQuery = false
-	marker.Color = Color3.fromRGB(140, 210, 120)
-	marker.Material = Enum.Material.Neon
-	marker.Size = Vector3.new(1.1, 0.12, 1.1)
-	marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.1, tile.Position.Z)
-	marker:SetAttribute("GridX", unitState.GridX)
-	marker:SetAttribute("GridZ", unitState.GridZ)
-	marker:SetAttribute("ResourceId", tile:GetAttribute("ResourceId"))
-	marker.Parent = getImprovementsFolder()
+	if not createImprovementVisual(tile, resourceType) then
+		createFallbackImprovementMarker(tile, resourceType)
+	end
 
 	setUnitActionState(unitState, "BuiltImprovement", false, false)
 end
@@ -695,13 +876,14 @@ local function startCityProduction(owner: any, cityId: string, unitType: string)
 	end
 
 	cityState.ProductionQueue = unitType
+	local productionSeconds = owner.UserId < 0 and BOT_UNIT_PRODUCTION_SECONDS or CityConfig.Economy.UnitProductionSeconds
 	if cityState.Model then
 		cityState.Model:SetAttribute("ProductionQueue", unitType)
-		cityState.Model:SetAttribute("ProductionSecondsLeft", CityConfig.Economy.UnitProductionSeconds)
+		cityState.Model:SetAttribute("ProductionSecondsLeft", productionSeconds)
 	end
 
 	task.spawn(function()
-		for secondsLeft = CityConfig.Economy.UnitProductionSeconds, 1, -1 do
+		for secondsLeft = productionSeconds, 1, -1 do
 			if not CityService.GetCity(cityId) then
 				return
 			end
@@ -1116,9 +1298,38 @@ local function getBotOwner(ownerUserId: number)
 	return nil
 end
 
+local function getBotUnitCounts(ownerUserId: number): (number, number)
+	local totalUnits = 0
+	local builders = 0
+
+	for _, unitState in unitsById do
+		if unitState.OwnerUserId == ownerUserId then
+			totalUnits += 1
+			if unitState.UnitType == "Builder" then
+				builders += 1
+			end
+		end
+	end
+
+	return totalUnits, builders
+end
+
+local function chooseBotProducedUnit(random: Random, ownerUserId: number): string?
+	local totalUnits, builders = getBotUnitCounts(ownerUserId)
+	if totalUnits >= BOT_MAX_UNITS_PER_OWNER then
+		return nil
+	end
+
+	local producedUnits = { "Warrior", "Archer", "Scout" }
+	if builders < BOT_MAX_BUILDERS_PER_OWNER then
+		table.insert(producedUnits, "Builder")
+	end
+
+	return producedUnits[random:NextInteger(1, #producedUnits)]
+end
+
 local function startBotProductionLoop()
 	local random = Random.new()
-	local producedUnits = { "Warrior", "Archer", "Scout", "Builder" }
 
 	while true do
 		task.wait(BOT_PRODUCTION_SECONDS)
@@ -1127,7 +1338,10 @@ local function startBotProductionLoop()
 			if cityState.OwnerUserId < 0 and cityState.ProductionQueue == nil then
 				local botOwner = getBotOwner(cityState.OwnerUserId)
 				if botOwner then
-					startCityProduction(botOwner, cityId, producedUnits[random:NextInteger(1, #producedUnits)])
+					local unitType = chooseBotProducedUnit(random, cityState.OwnerUserId)
+					if unitType then
+						startCityProduction(botOwner, cityId, unitType)
+					end
 				end
 			end
 		end

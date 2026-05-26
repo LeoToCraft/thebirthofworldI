@@ -15,6 +15,7 @@ local unitActionEvent = remotesFolder:WaitForChild("UnitAction") :: RemoteEvent
 local createCountryEvent = remotesFolder:WaitForChild("CreateCountry") :: RemoteEvent
 local createUnitEvent = remotesFolder:WaitForChild("CreateUnit") :: RemoteEvent
 local diplomacyActionEvent = remotesFolder:WaitForChild("DiplomacyAction") :: RemoteEvent
+local deleteCityEvent = remotesFolder:WaitForChild("DeleteCity") :: RemoteEvent
 
 local selectedUnitId: string? = nil
 local selectedUnitModel: Model? = nil
@@ -41,6 +42,12 @@ local cityProductionStatus: TextLabel? = nil
 local diplomacyGui: ScreenGui? = nil
 local diplomacyWindow: Frame? = nil
 local diplomacyList: Frame? = nil
+local cityListGui: ScreenGui? = nil
+local cityListWindow: Frame? = nil
+local cityListContent: Frame? = nil
+local technologyGui: ScreenGui? = nil
+local technologyWindow: Frame? = nil
+local technologyStatus: TextLabel? = nil
 local gameHudGui: ScreenGui? = nil
 local hudCountryLabel: TextLabel? = nil
 local hudContextTitle: TextLabel? = nil
@@ -57,12 +64,15 @@ highlightFolder.Name = "MovementHighlights"
 highlightFolder.Parent = Workspace
 
 local HEALTH_BAR_NAME = "UnitHealthBar"
-local HUD_DARK = Color3.fromRGB(22, 25, 30)
-local HUD_PANEL = Color3.fromRGB(32, 37, 45)
-local HUD_PANEL_LIGHT = Color3.fromRGB(45, 52, 62)
-local HUD_GOLD = Color3.fromRGB(226, 190, 112)
-local HUD_TEXT = Color3.fromRGB(245, 239, 221)
-local HUD_MUTED = Color3.fromRGB(184, 191, 198)
+local HUD_DARK = Color3.fromRGB(64, 73, 202)
+local HUD_PANEL = Color3.fromRGB(72, 81, 206)
+local HUD_PANEL_LIGHT = Color3.fromRGB(78, 88, 216)
+local HUD_GOLD = Color3.fromRGB(0, 190, 255)
+local HUD_TEXT = Color3.fromRGB(255, 255, 255)
+local HUD_MUTED = Color3.fromRGB(218, 231, 255)
+local HUD_BLACK_TEXT = Color3.fromRGB(10, 18, 44)
+local HUD_WHITE = Color3.fromRGB(248, 252, 255)
+local HUD_DIM_BLUE = Color3.fromRGB(45, 54, 178)
 local WORLD_MAP_TILE_SIZE = 2
 local WORLD_MAP_SIZE = UDim2.fromOffset(
 	MapConfig.Map.Width * WORLD_MAP_TILE_SIZE,
@@ -82,6 +92,13 @@ local ACTION_BUTTONS = {
 	{ Id = "FortifyHeal", Text = "Укрепиться до исцеления" },
 	{ Id = "Delete", Text = "Удалить юнита" },
 }
+local TECHNOLOGIES = {
+	{ Name = "Гончарное дело", Detail = "Открывает базовую экономику города." },
+	{ Name = "Горное дело", Detail = "Позже позволит улучшать холмы и камень." },
+	{ Name = "Стрельба из лука", Detail = "Усиливает дальний бой и лучников." },
+	{ Name = "Письменность", Detail = "Подготовка к науке и управлению." },
+}
+local selectedTechnologyName: string? = nil
 
 local function getTileName(x: number, z: number): string
 	return string.format("Tile_%03d_%03d", x, z)
@@ -497,9 +514,20 @@ end
 local function addStroke(instance: GuiObject, color: Color3?, transparency: number?)
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = color or HUD_GOLD
-	stroke.Transparency = transparency or 0.35
-	stroke.Thickness = 1
+	stroke.Transparency = transparency or 0.12
+	stroke.Thickness = 2
 	stroke.Parent = instance
+end
+
+local function addCorner(instance: GuiObject, radius: UDim?)
+	local existingCorner = instance:FindFirstChildOfClass("UICorner")
+	if existingCorner then
+		existingCorner:Destroy()
+	end
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = radius or UDim.new(0, 10)
+	corner.Parent = instance
 end
 
 local function addPadding(instance: GuiObject, inset: number)
@@ -536,20 +564,23 @@ local function createHudButton(parent: Instance, text: string, size: UDim2): Tex
 	button.TextColor3 = HUD_TEXT
 	button.TextSize = 13
 	button.Parent = parent
-	addStroke(button, Color3.fromRGB(128, 137, 148), 0.65)
+	addCorner(button, UDim.new(0, 10))
+	addStroke(button, HUD_GOLD, 0.1)
 
 	return button
 end
 
 local function createResourceChip(parent: Instance, text: string): TextLabel
 	local chip = Instance.new("Frame")
-	chip.BackgroundColor3 = Color3.fromRGB(25, 30, 37)
+	chip.BackgroundColor3 = HUD_DIM_BLUE
+	chip.BackgroundTransparency = 0.12
 	chip.BorderSizePixel = 0
-	chip.Size = UDim2.fromOffset(88, 28)
+	chip.Size = UDim2.fromOffset(78, 26)
 	chip.Parent = parent
-	addStroke(chip, Color3.fromRGB(84, 91, 103), 0.65)
+	addCorner(chip, UDim.new(0, 8))
+	addStroke(chip, HUD_GOLD, 0.35)
 
-	local label = createHudLabel(chip, text, UDim2.fromScale(1, 1), 12, true)
+	local label = createHudLabel(chip, text, UDim2.fromScale(1, 1), 11, true)
 	label.TextXAlignment = Enum.TextXAlignment.Center
 
 	return label
@@ -644,6 +675,22 @@ local function getCityModels(): { Model }
 	return cities
 end
 
+local function getOwnedCityModels(): { Model }
+	local cities = {}
+
+	for _, city in getCityModels() do
+		if city:GetAttribute("OwnerUserId") == localPlayer.UserId then
+			table.insert(cities, city)
+		end
+	end
+
+	table.sort(cities, function(a, b)
+		return tostring(a:GetAttribute("CityName") or "") < tostring(b:GetAttribute("CityName") or "")
+	end)
+
+	return cities
+end
+
 local function getPlayerMapPosition(userId: number): (number?, number?)
 	local citiesFolder = getCitiesFolder()
 	if citiesFolder then
@@ -681,7 +728,7 @@ local function getAvatarImage(userId: number): string
 	end
 
 	local ok, image = pcall(function()
-		return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+		return Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
 	end)
 
 	if ok then
@@ -707,6 +754,10 @@ local function addWorldMapTerritoryCell(x: number, z: number, color: Color3)
 	cell.Parent = worldMapTerritories
 end
 
+local function getWorldMapTerritoryKey(x: number, z: number): string
+	return tostring(x) .. ":" .. tostring(z)
+end
+
 local function updateWorldMapTerritories()
 	if not worldMapTerritories then
 		return
@@ -714,20 +765,31 @@ local function updateWorldMapTerritories()
 
 	worldMapTerritories:ClearAllChildren()
 
+	local territoriesByOwner = {}
 	for _, city in getCityModels() do
 		local ownerUserId = city:GetAttribute("OwnerUserId")
 		local cityX = city:GetAttribute("GridX")
 		local cityZ = city:GetAttribute("GridZ")
 		if typeof(ownerUserId) == "number" and typeof(cityX) == "number" and typeof(cityZ) == "number" then
-			local color = getCountryColor(ownerUserId)
+			if not territoriesByOwner[ownerUserId] then
+				territoriesByOwner[ownerUserId] = {}
+			end
+
 			for x = cityX - COUNTRY_TERRITORY_RADIUS, cityX + COUNTRY_TERRITORY_RADIUS do
 				for z = cityZ - COUNTRY_TERRITORY_RADIUS, cityZ + COUNTRY_TERRITORY_RADIUS do
 					local distance = math.max(math.abs(x - cityX), math.abs(z - cityZ))
 					if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length and distance <= COUNTRY_TERRITORY_RADIUS then
-						addWorldMapTerritoryCell(x, z, color)
+						territoriesByOwner[ownerUserId][getWorldMapTerritoryKey(x, z)] = { X = x, Z = z }
 					end
 				end
 			end
+		end
+	end
+
+	for ownerUserId, territoryTiles in territoriesByOwner do
+		local color = getCountryColor(ownerUserId)
+		for _, position in territoryTiles do
+			addWorldMapTerritoryCell(position.X, position.Z, color)
 		end
 	end
 end
@@ -1190,8 +1252,8 @@ local function ensureDiplomacyGui()
 	addPadding(window, 12)
 	addStroke(window, HUD_GOLD, 0.35)
 
-	local title = createHudLabel(window, "Державы", UDim2.new(1, -34, 0, 24), 18, true)
-	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+	local title = createHudLabel(window, "Список государств", UDim2.new(1, -34, 0, 24), 18, true)
+	title.TextColor3 = HUD_WHITE
 
 	local closeButton = createHudButton(window, "X", UDim2.fromOffset(28, 24))
 	closeButton.AnchorPoint = Vector2.new(1, 0)
@@ -1227,6 +1289,423 @@ local function showDiplomacyWindow()
 	end
 end
 
+local function clearCityList()
+	if not cityListContent then
+		return
+	end
+
+	for _, child in cityListContent:GetChildren() do
+		if child:IsA("Frame") or child:IsA("TextLabel") then
+			child:Destroy()
+		end
+	end
+end
+
+local refreshCityList
+
+local function createCityListUnitButton(parent: Instance, cityId: string, text: string, unitType: string, order: number)
+	local button = createHudButton(parent, text, UDim2.fromOffset(82, 25))
+	button.LayoutOrder = order
+	button.TextSize = 11
+	button.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	button.Activated:Connect(function()
+		createUnitEvent:FireServer(cityId, unitType)
+		task.delay(0.25, refreshCityList)
+	end)
+end
+
+local function createCityListRow(city: Model, order: number)
+	if not cityListContent then
+		return
+	end
+
+	local cityId = city:GetAttribute("CityId")
+	if typeof(cityId) ~= "string" then
+		return
+	end
+
+	local cityName = city:GetAttribute("CityName")
+	local population = city:GetAttribute("Population")
+	local queue = city:GetAttribute("ProductionQueue")
+	local secondsLeft = city:GetAttribute("ProductionSecondsLeft")
+
+	local row = Instance.new("Frame")
+	row.Name = "CityRow"
+	row.BackgroundColor3 = HUD_PANEL
+	row.BorderSizePixel = 0
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, -4, 0, 132)
+	row.Parent = cityListContent
+	addPadding(row, 8)
+	addStroke(row, Color3.fromRGB(95, 104, 116), 0.65)
+
+	local title = createHudLabel(row, typeof(cityName) == "string" and cityName or "Город", UDim2.new(1, -128, 0, 22), 14, true)
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local productionText = typeof(queue) == "string"
+		and string.format("Строится: %s (%dс)", queue, typeof(secondsLeft) == "number" and secondsLeft or 0)
+		or "Производство свободно"
+	local stats = createHudLabel(
+		row,
+		string.format("Население: %d   %s", typeof(population) == "number" and population or 0, productionText),
+		UDim2.new(1, -128, 0, 18),
+		12,
+		false
+	)
+	stats.Position = UDim2.fromOffset(0, 24)
+	stats.TextColor3 = HUD_MUTED
+
+	local improveButton = createHudButton(row, "Улучшить город", UDim2.fromOffset(116, 26))
+	improveButton.AnchorPoint = Vector2.new(1, 0)
+	improveButton.Position = UDim2.new(1, 0, 0, 0)
+	improveButton.Active = false
+	improveButton.AutoButtonColor = false
+	improveButton.BackgroundColor3 = Color3.fromRGB(57, 59, 65)
+	improveButton.Text = "Улучшить город (закрыто)"
+	improveButton.TextSize = 10
+
+	local deleteButton = createHudButton(row, "Удалить город", UDim2.fromOffset(116, 26))
+	deleteButton.AnchorPoint = Vector2.new(1, 0)
+	deleteButton.Position = UDim2.new(1, 0, 0, 34)
+	deleteButton.BackgroundColor3 = Color3.fromRGB(134, 62, 58)
+	deleteButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	deleteButton.Activated:Connect(function()
+		deleteCityEvent:FireServer(cityId)
+		task.delay(0.25, refreshCityList)
+	end)
+
+	local unitButtons = Instance.new("Frame")
+	unitButtons.Name = "UnitButtons"
+	unitButtons.BackgroundTransparency = 1
+	unitButtons.Position = UDim2.fromOffset(0, 62)
+	unitButtons.Size = UDim2.new(1, 0, 0, 60)
+	unitButtons.Parent = row
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.Padding = UDim.new(0, 6)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = unitButtons
+
+	createCityListUnitButton(unitButtons, cityId, "Поселенец", "Settler", 1)
+	createCityListUnitButton(unitButtons, cityId, "Воин", "Warrior", 2)
+	createCityListUnitButton(unitButtons, cityId, "Строитель", "Builder", 3)
+	createCityListUnitButton(unitButtons, cityId, "Лучник", "Archer", 4)
+	createCityListUnitButton(unitButtons, cityId, "Разведчик", "Scout", 5)
+end
+
+function refreshCityList()
+	clearCityList()
+
+	if not cityListContent then
+		return
+	end
+
+	local cities = getOwnedCityModels()
+	if #cities == 0 then
+		local empty = createHudLabel(cityListContent, "У государства пока нет городов", UDim2.new(1, 0, 0, 32), 13, false)
+		empty.TextColor3 = HUD_MUTED
+		return
+	end
+
+	for index, city in cities do
+		createCityListRow(city, index)
+	end
+end
+
+local function hideCityListWindow()
+	if cityListWindow then
+		cityListWindow.Visible = false
+	end
+end
+
+local function ensureCityListGui()
+	if cityListGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "CityListGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = playerGui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.AnchorPoint = Vector2.new(0.5, 0.5)
+	window.BackgroundColor3 = HUD_DARK
+	window.BackgroundTransparency = 0.02
+	window.BorderSizePixel = 0
+	window.Position = UDim2.fromScale(0.5, 0.5)
+	window.Size = UDim2.fromOffset(560, 480)
+	window.Visible = false
+	window.Parent = gui
+	addPadding(window, 12)
+	addStroke(window, HUD_GOLD, 0.35)
+
+	local title = createHudLabel(window, "Список городов", UDim2.new(1, -34, 0, 24), 18, true)
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local closeButton = createHudButton(window, "X", UDim2.fromOffset(28, 24))
+	closeButton.AnchorPoint = Vector2.new(1, 0)
+	closeButton.Position = UDim2.new(1, 0, 0, 0)
+	closeButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	closeButton.Activated:Connect(hideCityListWindow)
+
+	local list = Instance.new("ScrollingFrame")
+	list.Name = "List"
+	list.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	list.BackgroundTransparency = 1
+	list.BorderSizePixel = 0
+	list.CanvasSize = UDim2.fromOffset(0, 0)
+	list.Position = UDim2.fromOffset(0, 36)
+	list.ScrollBarThickness = 6
+	list.Size = UDim2.new(1, 0, 1, -36)
+	list.Parent = window
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	cityListGui = gui
+	cityListWindow = window
+	cityListContent = list
+end
+
+local function showCityListWindow()
+	ensureCityListGui()
+	refreshCityList()
+
+	if cityListWindow then
+		cityListWindow.Visible = true
+	end
+end
+
+local function hideTechnologyWindow()
+	if technologyWindow then
+		technologyWindow.Visible = false
+	end
+end
+
+local function updateTechnologyStatus()
+	if not technologyStatus then
+		return
+	end
+
+	if selectedTechnologyName then
+		technologyStatus.Text = "Исследуется: " .. selectedTechnologyName
+	else
+		technologyStatus.Text = "Выберите технологию для исследования"
+	end
+end
+
+local function createTechnologyRow(parent: Instance, technology: { Name: string, Detail: string }, order: number)
+	local row = Instance.new("Frame")
+	row.Name = "TechnologyRow"
+	row.BackgroundColor3 = HUD_PANEL
+	row.BorderSizePixel = 0
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, -4, 0, 76)
+	row.Parent = parent
+	addPadding(row, 8)
+	addStroke(row, Color3.fromRGB(95, 104, 116), 0.65)
+
+	local title = createHudLabel(row, technology.Name, UDim2.new(1, -140, 0, 22), 14, true)
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+
+	local detail = createHudLabel(row, technology.Detail, UDim2.new(1, -140, 0, 34), 12, false)
+	detail.Position = UDim2.fromOffset(0, 26)
+	detail.TextColor3 = HUD_MUTED
+	detail.TextWrapped = true
+
+	local button = createHudButton(row, "Исследовать", UDim2.fromOffset(120, 28))
+	button.AnchorPoint = Vector2.new(1, 0.5)
+	button.Position = UDim2.new(1, 0, 0.5, 0)
+	button.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	button.Activated:Connect(function()
+		selectedTechnologyName = technology.Name
+		updateTechnologyStatus()
+	end)
+end
+
+local function ensureTechnologyGui()
+	if technologyGui then
+		return
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "TechnologyGui"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = playerGui
+
+	local window = Instance.new("Frame")
+	window.Name = "Window"
+	window.BackgroundColor3 = HUD_DARK
+	window.BackgroundTransparency = 0
+	window.BorderSizePixel = 0
+	window.Size = UDim2.fromScale(1, 1)
+	window.Visible = false
+	window.Parent = gui
+
+	local topLine = Instance.new("Frame")
+	topLine.Name = "TopLine"
+	topLine.BackgroundColor3 = HUD_GOLD
+	topLine.BorderSizePixel = 0
+	topLine.Position = UDim2.new(0, 0, 0, 56)
+	topLine.Size = UDim2.new(1, 0, 0, 4)
+	topLine.Parent = window
+
+	local techTitle = createHudLabel(window, "Технологии", UDim2.fromOffset(320, 38), 22, true)
+	techTitle.Position = UDim2.fromOffset(235, 13)
+	techTitle.TextColor3 = HUD_BLACK_TEXT
+
+	local techSubtitle = createHudLabel(window, "Выберите направление развития", UDim2.fromOffset(340, 24), 13, false)
+	techSubtitle.Position = UDim2.fromOffset(235, 42)
+	techSubtitle.TextColor3 = HUD_MUTED
+
+	local title = createHudLabel(window, "Технологии", UDim2.new(1, -34, 0, 24), 18, true)
+	title.TextColor3 = Color3.fromRGB(255, 230, 164)
+	title.Visible = false
+
+	local closeButton = createHudButton(window, "X", UDim2.fromOffset(28, 24))
+	closeButton.AnchorPoint = Vector2.new(1, 0)
+	closeButton.Position = UDim2.new(1, 0, 0, 0)
+	closeButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	closeButton.Activated:Connect(hideTechnologyWindow)
+	closeButton.Size = UDim2.fromOffset(42, 34)
+	closeButton.Position = UDim2.new(1, -20, 0, 18)
+
+	local status = createHudLabel(window, "Выберите технологию для исследования", UDim2.new(1, 0, 0, 20), 12, false)
+	status.Position = UDim2.fromOffset(0, 34)
+	status.TextColor3 = HUD_MUTED
+	technologyStatus = status
+	status.AnchorPoint = Vector2.new(0.5, 0)
+	status.Position = UDim2.new(0.5, 0, 0, 88)
+	status.Size = UDim2.fromOffset(420, 24)
+	status.Text = "Выберите технологию для исследования"
+	status.TextColor3 = HUD_WHITE
+	status.TextSize = 14
+	status.TextXAlignment = Enum.TextXAlignment.Center
+
+	local list = Instance.new("Frame")
+	list.BackgroundTransparency = 1
+	list.Position = UDim2.fromOffset(0, 66)
+	list.Size = UDim2.new(1, 0, 1, -66)
+	list.Visible = false
+	list.Parent = window
+
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	for index, technology in TECHNOLOGIES do
+		createTechnologyRow(list, technology, index)
+	end
+
+	local tree = Instance.new("Frame")
+	tree.Name = "TechnologyTree"
+	tree.BackgroundTransparency = 1
+	tree.Position = UDim2.fromOffset(0, 110)
+	tree.Size = UDim2.new(1, 0, 1, -110)
+	tree.Parent = window
+
+	local function createConnector(position: UDim2, size: UDim2, rotation: number?)
+		local line = Instance.new("Frame")
+		line.Name = "Connector"
+		line.AnchorPoint = Vector2.new(0.5, 0.5)
+		line.BackgroundColor3 = HUD_WHITE
+		line.BorderSizePixel = 0
+		line.Position = position
+		line.Rotation = rotation or 0
+		line.Size = size
+		line.ZIndex = 1
+		line.Parent = tree
+	end
+
+	createConnector(UDim2.fromScale(0.31, 0.43), UDim2.fromScale(0.11, 0.006), -10)
+	createConnector(UDim2.fromScale(0.31, 0.56), UDim2.fromScale(0.11, 0.006), 0)
+	createConnector(UDim2.fromScale(0.38, 0.66), UDim2.fromScale(0.15, 0.006), 14)
+	createConnector(UDim2.fromScale(0.61, 0.43), UDim2.fromScale(0.18, 0.006), 0)
+	createConnector(UDim2.fromScale(0.61, 0.57), UDim2.fromScale(0.16, 0.006), 18)
+
+	local function createTechNode(technology: { Name: string, Detail: string }, position: UDim2, size: UDim2)
+		local node = Instance.new("TextButton")
+		node.Name = "TechNode"
+		node.AnchorPoint = Vector2.new(0.5, 0.5)
+		node.AutoButtonColor = true
+		node.BackgroundColor3 = HUD_PANEL
+		node.BackgroundTransparency = 0.04
+		node.BorderSizePixel = 0
+		node.Font = Enum.Font.GothamBold
+		node.Position = position
+		node.Size = size
+		node.Text = ""
+		node.ZIndex = 2
+		node.Parent = tree
+		addCorner(node, UDim.new(0, 22))
+		addStroke(node, HUD_GOLD, 0)
+
+		local titleLabel = createHudLabel(node, technology.Name, UDim2.new(1, -24, 0, 26), 18, true)
+		titleLabel.Position = UDim2.fromOffset(12, 12)
+		titleLabel.TextColor3 = HUD_WHITE
+		titleLabel.TextXAlignment = Enum.TextXAlignment.Center
+
+		local detail = createHudLabel(node, technology.Detail, UDim2.new(1, -24, 1, -48), 12, false)
+		detail.Position = UDim2.fromOffset(12, 42)
+		detail.TextColor3 = HUD_MUTED
+		detail.TextWrapped = true
+		detail.TextXAlignment = Enum.TextXAlignment.Center
+		detail.TextYAlignment = Enum.TextYAlignment.Top
+
+		node.MouseButton1Down:Connect(function()
+			ignoreNextWorldClick = true
+		end)
+		node.Activated:Connect(function()
+			selectedTechnologyName = technology.Name
+			updateTechnologyStatus()
+		end)
+	end
+
+	local treeNodes = {
+		{ Technology = TECHNOLOGIES[1], Position = UDim2.fromScale(0.18, 0.55), Size = UDim2.fromOffset(290, 104) },
+		{ Technology = TECHNOLOGIES[2], Position = UDim2.fromScale(0.42, 0.38), Size = UDim2.fromOffset(290, 106) },
+		{ Technology = TECHNOLOGIES[3], Position = UDim2.fromScale(0.42, 0.56), Size = UDim2.fromOffset(290, 106) },
+		{ Technology = TECHNOLOGIES[4], Position = UDim2.fromScale(0.50, 0.75), Size = UDim2.fromOffset(290, 106) },
+		{ Technology = { Name = "Колесо", Detail = "Будущая ветка транспорта и быстрых перемещений." }, Position = UDim2.fromScale(0.79, 0.39), Size = UDim2.fromOffset(290, 106) },
+		{ Technology = { Name = "Государственность", Detail = "Будущая ветка политики, законов и управления." }, Position = UDim2.fromScale(0.79, 0.58), Size = UDim2.fromOffset(290, 106) },
+	}
+
+	for _, node in treeNodes do
+		createTechNode(node.Technology, node.Position, node.Size)
+	end
+
+	technologyGui = gui
+	technologyWindow = window
+	updateTechnologyStatus()
+end
+
+local function showTechnologyWindow()
+	ensureTechnologyGui()
+	updateTechnologyStatus()
+
+	if technologyWindow then
+		technologyWindow.Visible = true
+	end
+end
+
 local function ensureGameHud()
 	if gameHudGui then
 		return
@@ -1242,27 +1721,53 @@ local function ensureGameHud()
 	local topBar = Instance.new("Frame")
 	topBar.Name = "TopBar"
 	topBar.BackgroundColor3 = HUD_DARK
-	topBar.BackgroundTransparency = 0.04
+	topBar.BackgroundTransparency = 0
 	topBar.BorderSizePixel = 0
-	topBar.Size = UDim2.new(1, 0, 0, 46)
+	topBar.Size = UDim2.new(1, 0, 0, 60)
 	topBar.Parent = gui
 	addStroke(topBar, HUD_GOLD, 0.55)
+
+	local topLine = Instance.new("Frame")
+	topLine.Name = "TopLine"
+	topLine.BackgroundColor3 = HUD_GOLD
+	topLine.BorderSizePixel = 0
+	topLine.Position = UDim2.new(0, 0, 1, -4)
+	topLine.Size = UDim2.new(1, 0, 0, 4)
+	topLine.Parent = topBar
 
 	local country = createHudLabel(topBar, "Новая страна", UDim2.fromOffset(210, 46), 16, true)
 	country.Position = UDim2.fromOffset(16, 0)
 	country.TextColor3 = Color3.fromRGB(255, 230, 164)
 	hudCountryLabel = country
+	country.Position = UDim2.fromOffset(235, 8)
+	country.Size = UDim2.fromOffset(290, 32)
+	country.TextColor3 = HUD_BLACK_TEXT
+	country.TextSize = 17
+
+	local avatar = Instance.new("ImageLabel")
+	avatar.Name = "PlayerAvatar"
+	avatar.AnchorPoint = Vector2.new(0.5, 0)
+	avatar.BackgroundColor3 = HUD_WHITE
+	avatar.BorderSizePixel = 0
+	avatar.Image = getAvatarImage(localPlayer.UserId)
+	avatar.Position = UDim2.fromOffset(152, -6)
+	avatar.Size = UDim2.fromOffset(134, 134)
+	avatar.ZIndex = 5
+	avatar.Parent = gui
+	addCorner(avatar, UDim.new(1, 0))
+	addStroke(avatar, HUD_GOLD, 0)
 
 	local resources = Instance.new("Frame")
 	resources.Name = "Resources"
 	resources.BackgroundTransparency = 1
-	resources.Position = UDim2.fromOffset(236, 9)
-	resources.Size = UDim2.new(1, -560, 0, 28)
+	resources.AnchorPoint = Vector2.new(1, 0)
+	resources.Position = UDim2.new(1, -18, 0, 16)
+	resources.Size = UDim2.fromOffset(510, 28)
 	resources.Parent = topBar
 
 	local resourceLayout = Instance.new("UIListLayout")
 	resourceLayout.FillDirection = Enum.FillDirection.Horizontal
-	resourceLayout.Padding = UDim.new(0, 8)
+	resourceLayout.Padding = UDim.new(0, 6)
 	resourceLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	resourceLayout.Parent = resources
 
@@ -1273,19 +1778,53 @@ local function ensureGameHud()
 	hudResourceLabels.Food = createResourceChip(resources, "Пища 0")
 	hudResourceLabels.Production = createResourceChip(resources, "Произв. 0")
 
-	local nationsButton = createHudButton(topBar, "Державы", UDim2.fromOffset(118, 28))
-	nationsButton.AnchorPoint = Vector2.new(1, 0)
-	nationsButton.Position = UDim2.new(1, -164, 0, 9)
+	local topActions = Instance.new("Frame")
+	topActions.Name = "TopActions"
+	topActions.AnchorPoint = Vector2.new(0.5, 0)
+	topActions.BackgroundTransparency = 1
+	topActions.Position = UDim2.new(0.5, 0, 0, 29)
+	topActions.Size = UDim2.fromOffset(204, 54)
+	topActions.Parent = topBar
+
+	local actionsLayout = Instance.new("UIListLayout")
+	actionsLayout.FillDirection = Enum.FillDirection.Horizontal
+	actionsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	actionsLayout.Padding = UDim.new(0, 10)
+	actionsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	actionsLayout.Parent = topActions
+
+	local nationsButton = createHudButton(topActions, "Список государств", UDim2.fromOffset(150, 28))
+	nationsButton.LayoutOrder = 1
+	nationsButton.Size = UDim2.fromOffset(54, 54)
+	nationsButton.Text = "⚑"
+	nationsButton.TextSize = 28
+	addCorner(nationsButton, UDim.new(1, 0))
 	nationsButton.MouseButton1Down:Connect(function()
 		ignoreNextWorldClick = true
 	end)
 	nationsButton.Activated:Connect(showDiplomacyWindow)
 
-	local era = createHudLabel(topBar, "Древний мир", UDim2.fromOffset(136, 46), 13, true)
-	era.AnchorPoint = Vector2.new(1, 0)
-	era.Position = UDim2.new(1, -18, 0, 0)
-	era.TextXAlignment = Enum.TextXAlignment.Right
-	era.TextColor3 = HUD_MUTED
+	local citiesButton = createHudButton(topActions, "Список городов", UDim2.fromOffset(136, 28))
+	citiesButton.LayoutOrder = 2
+	citiesButton.Size = UDim2.fromOffset(54, 54)
+	citiesButton.Text = "⌂"
+	citiesButton.TextSize = 28
+	addCorner(citiesButton, UDim.new(1, 0))
+	citiesButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	citiesButton.Activated:Connect(showCityListWindow)
+
+	local technologiesButton = createHudButton(topActions, "Технологии", UDim2.fromOffset(112, 28))
+	technologiesButton.LayoutOrder = 3
+	technologiesButton.Size = UDim2.fromOffset(54, 54)
+	technologiesButton.Text = "⚗"
+	technologiesButton.TextSize = 28
+	addCorner(technologiesButton, UDim.new(1, 0))
+	technologiesButton.MouseButton1Down:Connect(function()
+		ignoreNextWorldClick = true
+	end)
+	technologiesButton.Activated:Connect(showTechnologyWindow)
 
 	local rightPanel = Instance.new("Frame")
 	rightPanel.Name = "RightPanel"
