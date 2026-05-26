@@ -1,9 +1,11 @@
 local MapGenerator = require(script.MapGenerator)
 local ResourceService = require(script.ResourceService)
 local CityService = require(script.CityService)
+local TechnologyService = require(script.TechnologyService)
 local UnitService = require(script.UnitService)
 
 MapGenerator.Generate()
 ResourceService.Generate()
 CityService.Start()
+TechnologyService.Start()
 UnitService.Start()

@@ -236,13 +236,17 @@ local function applyResourceToTile(tile: BasePart, resourceName: string, marker:
 	tile:SetAttribute("ResourceId", resourceId)
 	tile:SetAttribute("ResourceType", resourceName)
 	tile:SetAttribute("Resource", resource.DisplayName)
+	tile:SetAttribute("ResourceCategory", resource.Category or "Common")
+	tile:SetAttribute("StrategicYield", resource.StrategicYield or 0)
 	tile:SetAttribute("FoodYield", resource.Yields.Food)
 	tile:SetAttribute("ProductionYield", resource.Yields.Production)
 	tile:SetAttribute("GoldYield", resource.Yields.Gold)
 	marker:SetAttribute("ResourceId", resourceId)
+	marker:SetAttribute("ResourceCategory", resource.Category or "Common")
 	for _, descendant in marker:GetDescendants() do
 		if descendant:IsA("BasePart") then
 			descendant:SetAttribute("ResourceId", resourceId)
+			descendant:SetAttribute("ResourceCategory", resource.Category or "Common")
 			descendant:SetAttribute("GridX", tile:GetAttribute("GridX"))
 			descendant:SetAttribute("GridZ", tile:GetAttribute("GridZ"))
 		end
@@ -252,6 +256,7 @@ local function applyResourceToTile(tile: BasePart, resourceName: string, marker:
 		Marker = marker,
 		Tile = tile,
 		ResourceType = resourceName,
+		Category = resource.Category or "Common",
 		GridX = tile:GetAttribute("GridX"),
 		GridZ = tile:GetAttribute("GridZ"),
 		Food = resource.Yields.Food,

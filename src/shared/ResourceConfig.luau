@@ -13,7 +13,7 @@ ResourceConfig.Visual = {
 		Gold = -0.16,
 		Iron = -0.16,
 		Stone = -0.16,
-		Wood = -0.28,
+		Wood = 0.08,
 	},
 }
 
@@ -21,6 +21,7 @@ ResourceConfig.Types = {
 	Wheat = {
 		DisplayName = "Wheat",
 		ModelName = "wheat",
+		Category = "Common",
 		AllowedBiomes = {
 			Grass = true,
 			Sand = true,
@@ -37,6 +38,7 @@ ResourceConfig.Types = {
 	Cattle = {
 		DisplayName = "Cattle",
 		ModelName = "cattle",
+		Category = "Common",
 		AllowedBiomes = {
 			Grass = true,
 		},
@@ -52,6 +54,7 @@ ResourceConfig.Types = {
 	Wood = {
 		DisplayName = "Wood",
 		ModelName = "wood",
+		Category = "Common",
 		AllowedBiomes = {
 			Grass = true,
 			Winter = true,
@@ -68,6 +71,7 @@ ResourceConfig.Types = {
 	Fish = {
 		DisplayName = "Fish",
 		ModelName = "fish",
+		Category = "Common",
 		AllowedBiomes = {
 			Water = true,
 		},
@@ -83,6 +87,7 @@ ResourceConfig.Types = {
 	Stone = {
 		DisplayName = "Stone",
 		ModelName = "stone",
+		Category = "Common",
 		Rarity = 0.35,
 		AllowedBiomes = {
 			Sand = true,
@@ -99,6 +104,8 @@ ResourceConfig.Types = {
 	Iron = {
 		DisplayName = "Iron",
 		ModelName = "iron",
+		Category = "Strategic",
+		StrategicYield = 1,
 		Rarity = 0.28,
 		AllowedBiomes = {
 			Grass = true,
@@ -116,6 +123,7 @@ ResourceConfig.Types = {
 	Gold = {
 		DisplayName = "Gold",
 		ModelName = "gold",
+		Category = "Strategic",
 		Rarity = 0.22,
 		AllowedBiomes = {
 			Sand = true,
@@ -129,9 +137,29 @@ ResourceConfig.Types = {
 			Gold = 3,
 		},
 	},
+	Horses = {
+		DisplayName = "Horses",
+		ModelName = "horses",
+		Category = "Strategic",
+		StrategicYield = 1,
+		Rarity = 0.35,
+		AllowedBiomes = {
+			Grass = true,
+			Sand = true,
+		},
+		Weight = 4,
+		Color = Color3.fromRGB(174, 122, 73),
+		Shape = Enum.PartType.Ball,
+		Yields = {
+			Food = 1,
+			Production = 1,
+			Gold = 0,
+		},
+	},
 	Furs = {
 		DisplayName = "Furs",
 		ModelName = "furs",
+		Category = "Common",
 		AllowedBiomes = {
 			Winter = true,
 		},

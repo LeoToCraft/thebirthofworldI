@@ -22,7 +22,7 @@ local CITY_HEALTH_BAR_NAME = "CityHealthBar"
 
 local citiesById = {}
 local cityCountByOwner = {}
-local treasuryByOwner: { [number]: { Food: number, Production: number, Gold: number } } = {}
+local treasuryByOwner: { [number]: { Food: number, Production: number, Gold: number, Iron: number, Horses: number } } = {}
 local diplomacyByPair: { [string]: string } = {}
 
 local function getTileName(x: number, z: number): string
@@ -616,26 +616,61 @@ local function rebuildOwnerTerritory(ownerUserId: number)
 
 	local color = getCountryColor(ownerUserId)
 
-	for _, position in borderTiles do
+	for _, position in territoryTiles do
 		local tile = getTile(position.X, position.Z)
 		if tile then
-			local isOwnedTile = territoryTiles[getTerritoryKey(position.X, position.Z)] ~= nil
-			local isEdge = not isOwnedTile or isTerritoryEdge(borderTiles, position.X, position.Z)
 			local marker = Instance.new("Part")
-			marker.Name = isEdge and "Border" or "Territory"
+			marker.Name = "Territory"
 			marker.Anchored = true
 			marker.CanCollide = false
 			marker.CanQuery = false
 			marker.Color = color
 			marker.Material = Enum.Material.SmoothPlastic
-			local markerScale = isEdge and 1.03 or 0.98
-			marker.Size = Vector3.new(MapConfig.Tile.Width * markerScale, isEdge and 0.08 or 0.04, MapConfig.Tile.Length * markerScale)
-			marker.Transparency = isEdge and CityConfig.Territory.BorderTransparency or CityConfig.Territory.FillTransparency
+			marker.Size = Vector3.new(MapConfig.Tile.Width * 0.98, 0.035, MapConfig.Tile.Length * 0.98)
+			marker.Transparency = CityConfig.Territory.FillTransparency
 			marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.11, tile.Position.Z)
 			marker:SetAttribute("OwnerUserId", ownerUserId)
 			marker:SetAttribute("GridX", position.X)
 			marker:SetAttribute("GridZ", position.Z)
 			marker.Parent = folder
+		end
+	end
+
+	local borderDirections = {
+		{ X = 1, Z = 0 },
+		{ X = -1, Z = 0 },
+		{ X = 0, Z = 1 },
+		{ X = 0, Z = -1 },
+	}
+	local thickness = 0.16
+
+	for _, position in borderTiles do
+		local tile = getTile(position.X, position.Z)
+		if tile then
+			for _, direction in borderDirections do
+				if not borderTiles[getTerritoryKey(position.X + direction.X, position.Z + direction.Z)] then
+					local marker = Instance.new("Part")
+					marker.Name = "Border"
+					marker.Anchored = true
+					marker.CanCollide = false
+					marker.CanQuery = false
+					marker.Color = color
+					marker.Material = Enum.Material.SmoothPlastic
+					marker.Transparency = CityConfig.Territory.BorderTransparency
+					marker.Size = direction.X ~= 0
+						and Vector3.new(thickness, 0.09, MapConfig.Tile.Length * 1.04)
+						or Vector3.new(MapConfig.Tile.Width * 1.04, 0.09, thickness)
+					marker.Position = Vector3.new(
+						tile.Position.X + direction.X * MapConfig.Tile.Width / 2,
+						tile.Position.Y + tile.Size.Y / 2 + 0.14,
+						tile.Position.Z + direction.Z * MapConfig.Tile.Length / 2
+					)
+					marker:SetAttribute("OwnerUserId", ownerUserId)
+					marker:SetAttribute("GridX", position.X)
+					marker:SetAttribute("GridZ", position.Z)
+					marker.Parent = folder
+				end
+			end
 		end
 	end
 end
@@ -738,6 +773,8 @@ local function getOwnerTreasury(ownerUserId: number)
 			Food = 0,
 			Production = 0,
 			Gold = 0,
+			Iron = 0,
+			Horses = 0,
 		}
 	end
 
@@ -749,16 +786,20 @@ local function syncPlayerTreasury(player: Player)
 	player:SetAttribute("TreasuryFood", treasury.Food)
 	player:SetAttribute("TreasuryProduction", treasury.Production)
 	player:SetAttribute("TreasuryGold", treasury.Gold)
+	player:SetAttribute("TreasuryIron", treasury.Iron)
+	player:SetAttribute("TreasuryHorses", treasury.Horses)
 	player:SetAttribute("TreasuryScience", player:GetAttribute("TreasuryScience") or 0)
 	player:SetAttribute("TreasuryCulture", player:GetAttribute("TreasuryCulture") or 0)
 	player:SetAttribute("TreasuryFaith", player:GetAttribute("TreasuryFaith") or 0)
 end
 
-local function addTreasury(ownerUserId: number, food: number, production: number, gold: number)
+local function addTreasury(ownerUserId: number, food: number, production: number, gold: number, iron: number?, horses: number?)
 	local treasury = getOwnerTreasury(ownerUserId)
-	treasury.Food += food
-	treasury.Production += production
-	treasury.Gold += gold
+	treasury.Food += food or 0
+	treasury.Production += production or 0
+	treasury.Gold += gold or 0
+	treasury.Iron += iron or 0
+	treasury.Horses += horses or 0
 
 	local player = Players:GetPlayerByUserId(ownerUserId)
 	if player then
@@ -774,10 +815,12 @@ local function scaleYield(value: number): number
 	return math.max(1, math.floor(value * (CityConfig.Economy.YieldMultiplier or 1) + 0.5))
 end
 
-local function calculateCityYields(centerX: number, centerZ: number): (number, number, number)
+local function calculateCityYields(centerX: number, centerZ: number): (number, number, number, number, number)
 	local food = 0
 	local production = 0
 	local gold = 0
+	local iron = 0
+	local horses = 0
 	local radius = CityConfig.Territory.Radius
 
 	for x = centerX - radius, centerX + radius do
@@ -789,23 +832,36 @@ local function calculateCityYields(centerX: number, centerZ: number): (number, n
 					food += getNumberAttribute(tile, "FoodYield")
 					production += getNumberAttribute(tile, "ProductionYield")
 					gold += getNumberAttribute(tile, "GoldYield")
+					local strategicYield = getNumberAttribute(tile, "StrategicYield")
+					if tile:GetAttribute("ImprovedResource") == true and strategicYield > 0 then
+						local resourceType = tile:GetAttribute("ResourceType")
+						if resourceType == "Iron" then
+							iron += strategicYield
+						elseif resourceType == "Horses" then
+							horses += strategicYield
+						end
+					end
 				end
 			end
 		end
 	end
 
-	return food, production, gold
+	return food, production, gold, iron, horses
 end
 
-local function setCityYields(cityState, food: number, production: number, gold: number)
+local function setCityYields(cityState, food: number, production: number, gold: number, iron: number, horses: number)
 	cityState.FoodPerTurn = food
 	cityState.ProductionPerTurn = production
 	cityState.GoldPerTurn = gold
+	cityState.IronPerTurn = iron
+	cityState.HorsesPerTurn = horses
 
 	if cityState.Model then
 		cityState.Model:SetAttribute("FoodPerTurn", food)
 		cityState.Model:SetAttribute("ProductionPerTurn", production)
 		cityState.Model:SetAttribute("GoldPerTurn", gold)
+		cityState.Model:SetAttribute("IronPerTurn", iron)
+		cityState.Model:SetAttribute("HorsesPerTurn", horses)
 	end
 end
 
@@ -815,8 +871,8 @@ local function refreshCityYields(cityId: string)
 		return
 	end
 
-	local food, production, gold = calculateCityYields(cityState.GridX, cityState.GridZ)
-	setCityYields(cityState, food, production, gold)
+	local food, production, gold, iron, horses = calculateCityYields(cityState.GridX, cityState.GridZ)
+	setCityYields(cityState, food, production, gold, iron, horses)
 end
 
 local function startEconomyLoop()
@@ -830,7 +886,9 @@ local function startEconomyLoop()
 					cityState.OwnerUserId,
 					scaleYield(cityState.FoodPerTurn or 0),
 					scaleYield(cityState.ProductionPerTurn or 0),
-					scaleYield(cityState.GoldPerTurn or 0)
+					scaleYield(cityState.GoldPerTurn or 0),
+					scaleYield(cityState.IronPerTurn or 0),
+					scaleYield(cityState.HorsesPerTurn or 0)
 				)
 			end
 		end
@@ -961,6 +1019,8 @@ function CityService.FoundCity(player: any, x: number, z: number, requestedCityN
 		FoodPerTurn = cityModel:GetAttribute("FoodPerTurn"),
 		ProductionPerTurn = cityModel:GetAttribute("ProductionPerTurn"),
 		GoldPerTurn = cityModel:GetAttribute("GoldPerTurn"),
+		IronPerTurn = cityModel:GetAttribute("IronPerTurn"),
+		HorsesPerTurn = cityModel:GetAttribute("HorsesPerTurn"),
 	}
 	refreshCityYields(cityId)
 	rebuildOwnerTerritory(player.UserId)
@@ -1030,8 +1090,8 @@ function CityService.RefreshYieldsNear(ownerUserId: number, x: number, z: number
 	end
 end
 
-function CityService.AddTreasury(ownerUserId: number, food: number, production: number, gold: number)
-	addTreasury(ownerUserId, food, production, gold)
+function CityService.AddTreasury(ownerUserId: number, food: number, production: number, gold: number, iron: number?, horses: number?)
+	addTreasury(ownerUserId, food, production, gold, iron, horses)
 end
 
 function CityService.AreAtWar(firstUserId: number, secondUserId: number): boolean

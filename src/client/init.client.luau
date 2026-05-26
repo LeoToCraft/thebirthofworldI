@@ -5,6 +5,7 @@ local Workspace = game:GetService("Workspace")
 local MapConfig = require(ReplicatedStorage.Shared.MapConfig)
 local CityConfig = require(ReplicatedStorage.Shared.CityConfig)
 local UnitConfig = require(ReplicatedStorage.Shared.UnitConfig)
+local TechnologyConfig = require(ReplicatedStorage.Shared.TechnologyConfig)
 
 local localPlayer = Players.LocalPlayer
 local playerGui = localPlayer:WaitForChild("PlayerGui") :: PlayerGui
@@ -17,6 +18,7 @@ local createUnitEvent = remotesFolder:WaitForChild("CreateUnit") :: RemoteEvent
 local diplomacyActionEvent = remotesFolder:WaitForChild("DiplomacyAction") :: RemoteEvent
 local deleteCityEvent = remotesFolder:WaitForChild("DeleteCity") :: RemoteEvent
 local warNotificationEvent = remotesFolder:WaitForChild("WarNotification") :: RemoteEvent
+local researchTechnologyEvent = remotesFolder:WaitForChild("ResearchTechnology") :: RemoteEvent
 
 local selectedUnitId: string? = nil
 local selectedUnitModel: Model? = nil
@@ -89,6 +91,7 @@ local ACTION_BUTTONS = {
 	{ Id = "FoundCity", Text = "Основать город", SettlerOnly = true },
 	{ Id = "BuildImprovement", Text = "Улучшить ресурс", BuilderOnly = true },
 	{ Id = "Attack", Text = "Атаковать", AttackOnly = true },
+	{ Id = "AutoAttack", Text = "Авто-атака", AttackCapableOnly = true },
 	{ Id = "AttachTo", Text = "Прикрепить" },
 	{ Id = "Detach", Text = "Открепить", AttachedOnly = true },
 	{ Id = "Move", Text = "Переместить" },
@@ -97,12 +100,7 @@ local ACTION_BUTTONS = {
 	{ Id = "FortifyHeal", Text = "Укрепиться до исцеления" },
 	{ Id = "Delete", Text = "Удалить юнита" },
 }
-local TECHNOLOGIES = {
-	{ Name = "Гончарное дело", Detail = "Открывает базовую экономику города." },
-	{ Name = "Горное дело", Detail = "Позже позволит улучшать холмы и камень." },
-	{ Name = "Стрельба из лука", Detail = "Усиливает дальний бой и лучников." },
-	{ Name = "Письменность", Detail = "Подготовка к науке и управлению." },
-}
+local TECHNOLOGIES = TechnologyConfig.List
 local selectedTechnologyName: string? = nil
 
 local function getTileName(x: number, z: number): string
@@ -526,19 +524,17 @@ local function showAttackTargetsForSelectedUnit()
 
 	local range = unit.Range or 1
 	local unitsFolder = getUnitsFolder()
-	if not unitsFolder then
-		return
-	end
-
-	for _, enemy in unitsFolder:GetChildren() do
-		if enemy:IsA("Model") and enemy:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
-			local x = enemy:GetAttribute("GridX")
-			local z = enemy:GetAttribute("GridZ")
-			if typeof(x) == "number" and typeof(z) == "number" then
-				local distance = math.abs(x - originX) + math.abs(z - originZ)
-				local tile = getTile(x, z)
-				if distance >= 1 and distance <= range and tile then
-					createAttackHighlight(tile)
+	if unitsFolder then
+		for _, enemy in unitsFolder:GetChildren() do
+			if enemy:IsA("Model") and enemy:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+				local x = enemy:GetAttribute("GridX")
+				local z = enemy:GetAttribute("GridZ")
+				if typeof(x) == "number" and typeof(z) == "number" then
+					local distance = math.abs(x - originX) + math.abs(z - originZ)
+					local tile = getTile(x, z)
+					if distance >= 1 and distance <= range and tile then
+						createAttackHighlight(tile)
+					end
 				end
 			end
 		end
@@ -560,6 +556,47 @@ local function showAttackTargetsForSelectedUnit()
 			end
 		end
 	end
+end
+
+local function isTargetInAttackRange(model: Model, target: Model): boolean
+	local unitType = model:GetAttribute("UnitType")
+	local unit = typeof(unitType) == "string" and UnitConfig.Types[unitType] or nil
+	if not unit or unit.Attack <= 0 then
+		return false
+	end
+
+	local originX = model:GetAttribute("GridX")
+	local originZ = model:GetAttribute("GridZ")
+	local targetX = target:GetAttribute("GridX")
+	local targetZ = target:GetAttribute("GridZ")
+	if typeof(originX) ~= "number" or typeof(originZ) ~= "number" or typeof(targetX) ~= "number" or typeof(targetZ) ~= "number" then
+		return false
+	end
+
+	local distance = math.abs(targetX - originX) + math.abs(targetZ - originZ)
+	return distance >= 1 and distance <= (unit.Range or 1)
+end
+
+local function hasAttackTargetInRange(model: Model): boolean
+	local unitsFolder = getUnitsFolder()
+	if unitsFolder then
+		for _, enemy in unitsFolder:GetChildren() do
+			if enemy:IsA("Model") and enemy:GetAttribute("OwnerUserId") ~= localPlayer.UserId and isTargetInAttackRange(model, enemy) then
+				return true
+			end
+		end
+	end
+
+	local citiesFolder = getCitiesFolder()
+	if citiesFolder then
+		for _, city in citiesFolder:GetChildren() do
+			if city:IsA("Model") and city:GetAttribute("OwnerUserId") ~= localPlayer.UserId and isTargetInAttackRange(model, city) then
+				return true
+			end
+		end
+	end
+
+	return false
 end
 
 local function addStroke(instance: GuiObject, color: Color3?, transparency: number?)
@@ -1057,6 +1094,14 @@ local function updateGameHudResources()
 
 	if hudResourceLabels.Gold then
 		hudResourceLabels.Gold.Text = string.format("Золото %d", getPlayerNumberAttribute("TreasuryGold"))
+	end
+
+	if hudResourceLabels.Iron then
+		hudResourceLabels.Iron.Text = string.format("Железо %d", getPlayerNumberAttribute("TreasuryIron"))
+	end
+
+	if hudResourceLabels.Horses then
+		hudResourceLabels.Horses.Text = string.format("Кони %d", getPlayerNumberAttribute("TreasuryHorses"))
 	end
 
 	if hudResourceLabels.Faith then
@@ -1636,6 +1681,15 @@ local function ensureCityListGui()
 	cityListGui = gui
 	cityListWindow = window
 	cityListContent = list
+
+	task.spawn(function()
+		while cityListGui do
+			if cityListWindow and cityListWindow.Visible then
+				refreshCityList()
+			end
+			task.wait(1)
+		end
+	end)
 end
 
 local function showCityListWindow()
@@ -1683,6 +1737,22 @@ local function updateTechnologyStatus()
 	end
 end
 
+updateTechnologyStatus = function()
+	if not technologyStatus then
+		return
+	end
+
+	local currentName = localPlayer:GetAttribute("CurrentResearchName")
+	local secondsLeft = localPlayer:GetAttribute("ResearchSecondsLeft")
+	if typeof(currentName) == "string" then
+		technologyStatus.Text = string.format("Исследуется: %s (%dс)", currentName, typeof(secondsLeft) == "number" and secondsLeft or 0)
+	elseif selectedTechnologyName then
+		technologyStatus.Text = "Выбрано: " .. selectedTechnologyName
+	else
+		technologyStatus.Text = "Выберите технологию для исследования"
+	end
+end
+
 local function createTechnologyRow(parent: Instance, technology: { Name: string, Detail: string }, order: number)
 	local row = Instance.new("Frame")
 	row.Name = "TechnologyRow"
@@ -1710,6 +1780,9 @@ local function createTechnologyRow(parent: Instance, technology: { Name: string,
 	end)
 	button.Activated:Connect(function()
 		selectedTechnologyName = technology.Name
+		if typeof(technology.Id) == "string" then
+			researchTechnologyEvent:FireServer(technology.Id)
+		end
 		updateTechnologyStatus()
 	end)
 end
@@ -1829,13 +1902,29 @@ local function ensureTechnologyGui()
 		line.Size = size
 		line.ZIndex = 1
 		line.Parent = tree
+
+		local arrow = Instance.new("TextLabel")
+		arrow.Name = "ConnectorArrow"
+		arrow.AnchorPoint = Vector2.new(0.5, 0.5)
+		arrow.BackgroundTransparency = 1
+		arrow.Font = Enum.Font.GothamBold
+		arrow.Position = UDim2.new(position.X.Scale + size.X.Scale / 2, position.X.Offset, position.Y.Scale, position.Y.Offset)
+		arrow.Rotation = rotation or 0
+		arrow.Size = UDim2.fromOffset(18, 18)
+		arrow.Text = ">"
+		arrow.TextColor3 = Color3.fromRGB(255, 232, 180)
+		arrow.TextSize = 16
+		arrow.ZIndex = 1
+		arrow.Parent = tree
 	end
 
-	createConnector(UDim2.fromScale(0.31, 0.43), UDim2.fromScale(0.11, 0.006), -10)
-	createConnector(UDim2.fromScale(0.31, 0.56), UDim2.fromScale(0.11, 0.006), 0)
-	createConnector(UDim2.fromScale(0.38, 0.66), UDim2.fromScale(0.15, 0.006), 14)
-	createConnector(UDim2.fromScale(0.61, 0.43), UDim2.fromScale(0.18, 0.006), 0)
-	createConnector(UDim2.fromScale(0.61, 0.57), UDim2.fromScale(0.16, 0.006), 18)
+	createConnector(UDim2.fromScale(0.27, 0.34), UDim2.fromScale(0.13, 0.006), -12)
+	createConnector(UDim2.fromScale(0.27, 0.52), UDim2.fromScale(0.13, 0.006), 12)
+	createConnector(UDim2.fromScale(0.46, 0.35), UDim2.fromScale(0.13, 0.006), 0)
+	createConnector(UDim2.fromScale(0.46, 0.52), UDim2.fromScale(0.13, 0.006), 0)
+	createConnector(UDim2.fromScale(0.63, 0.44), UDim2.fromScale(0.12, 0.006), 18)
+	createConnector(UDim2.fromScale(0.30, 0.73), UDim2.fromScale(0.16, 0.006), 0)
+	createConnector(UDim2.fromScale(0.56, 0.74), UDim2.fromScale(0.16, 0.006), 0)
 
 	local techNodeStrokes = {}
 	local function refreshTechNodeStyles()
@@ -1848,7 +1937,7 @@ local function ensureTechnologyGui()
 		end
 	end
 
-	local function createTechNode(technology: { Name: string, Detail: string }, position: UDim2, size: UDim2)
+	local function createTechNode(technology: any, position: UDim2, size: UDim2)
 		local shadow = Instance.new("Frame")
 		shadow.Name = "TechNodeShadow"
 		shadow.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -1901,18 +1990,37 @@ local function ensureTechnologyGui()
 		titleLabel.TextColor3 = HUD_WHITE
 		titleLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-		local detail = createHudLabel(node, technology.Detail, UDim2.new(1, -24, 1, -48), 12, false)
+		local detail = createHudLabel(node, technology.Detail, UDim2.new(1, -24, 1, -70), 12, false)
 		detail.Position = UDim2.fromOffset(12, 50)
 		detail.TextColor3 = HUD_MUTED
 		detail.TextWrapped = true
 		detail.TextXAlignment = Enum.TextXAlignment.Center
 		detail.TextYAlignment = Enum.TextYAlignment.Top
 
+		local unlock = createHudLabel(
+			node,
+			string.format("%dс   %s", technology.Seconds or 0, technology.Unlock or "Открытие"),
+			UDim2.new(1, -24, 0, 18),
+			11,
+			true
+		)
+		unlock.AnchorPoint = Vector2.new(0, 1)
+		unlock.BackgroundColor3 = Color3.fromRGB(31, 43, 145)
+		unlock.BackgroundTransparency = 0.12
+		unlock.BorderSizePixel = 0
+		unlock.Position = UDim2.new(0, 12, 1, -10)
+		unlock.TextColor3 = Color3.fromRGB(255, 232, 180)
+		unlock.TextXAlignment = Enum.TextXAlignment.Center
+		addCorner(unlock, UDim.new(0, 8))
+
 		node.MouseButton1Down:Connect(function()
 			ignoreNextWorldClick = true
 		end)
 		node.Activated:Connect(function()
 			selectedTechnologyName = technology.Name
+			if typeof(technology.Id) == "string" then
+				researchTechnologyEvent:FireServer(technology.Id)
+			end
 			updateTechnologyStatus()
 			refreshTechNodeStyles()
 		end)
@@ -1925,6 +2033,17 @@ local function ensureTechnologyGui()
 		{ Technology = TECHNOLOGIES[4], Position = UDim2.fromScale(0.50, 0.75), Size = UDim2.fromOffset(290, 106) },
 		{ Technology = { Name = "Колесо", Detail = "Будущая ветка транспорта и быстрых перемещений." }, Position = UDim2.fromScale(0.79, 0.39), Size = UDim2.fromOffset(290, 106) },
 		{ Technology = { Name = "Государственность", Detail = "Будущая ветка политики, законов и управления." }, Position = UDim2.fromScale(0.79, 0.58), Size = UDim2.fromOffset(290, 106) },
+	}
+
+	treeNodes = {
+		{ Technology = TECHNOLOGIES[1], Position = UDim2.fromScale(0.16, 0.42), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[4], Position = UDim2.fromScale(0.16, 0.68), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[2], Position = UDim2.fromScale(0.38, 0.32), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[3], Position = UDim2.fromScale(0.38, 0.52), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[5], Position = UDim2.fromScale(0.38, 0.76), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[6], Position = UDim2.fromScale(0.62, 0.42), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[7], Position = UDim2.fromScale(0.62, 0.72), Size = UDim2.fromOffset(260, 128) },
+		{ Technology = TECHNOLOGIES[8], Position = UDim2.fromScale(0.84, 0.72), Size = UDim2.fromOffset(260, 128) },
 	}
 
 	for _, node in treeNodes do
@@ -2006,7 +2125,7 @@ local function ensureGameHud()
 	resources.BackgroundTransparency = 1
 	resources.AnchorPoint = Vector2.new(1, 0)
 	resources.Position = UDim2.new(1, -18, 0, 16)
-	resources.Size = UDim2.fromOffset(510, 28)
+	resources.Size = UDim2.fromOffset(700, 28)
 	resources.Parent = topBar
 
 	local resourceLayout = Instance.new("UIListLayout")
@@ -2018,6 +2137,8 @@ local function ensureGameHud()
 	hudResourceLabels.Science = createResourceChip(resources, "Наука 0")
 	hudResourceLabels.Culture = createResourceChip(resources, "Культура 0")
 	hudResourceLabels.Gold = createResourceChip(resources, "Золото 0")
+	hudResourceLabels.Iron = createResourceChip(resources, "Железо 0")
+	hudResourceLabels.Horses = createResourceChip(resources, "Кони 0")
 	hudResourceLabels.Faith = createResourceChip(resources, "Вера 0")
 	hudResourceLabels.Food = createResourceChip(resources, "Пища 0")
 	hudResourceLabels.Production = createResourceChip(resources, "Произв. 0")
@@ -2658,10 +2779,12 @@ local function showUnitActionWindow(model: Model)
 	end
 
 	local order = 0
+	local attackTargetInRange = hasAttackTargetInRange(model)
 	for _, action in ACTION_BUTTONS do
 		if (not action.SettlerOnly or unitType == "Settler")
 			and (not action.BuilderOnly or unitType == "Builder")
-			and (not action.AttackOnly or (unit and unit.Attack > 0))
+			and (not action.AttackOnly or (unit and unit.Attack > 0 and attackTargetInRange))
+			and (not action.AttackCapableOnly or (unit and unit.Attack > 0))
 			and (not action.AttachedOnly or model:GetAttribute("AttachedToUnitId") ~= nil) then
 			order += 1
 			createActionButton(action.Id, action.Text, order)
@@ -2707,6 +2830,55 @@ local function selectUnit(model: Model)
 
 	showUnitActionWindow(model)
 	showMovementForSelectedUnit()
+	showAttackTargetsForSelectedUnit()
+end
+
+local function findEnemyUnitAtTile(tile: BasePart): Model?
+	local x = tile:GetAttribute("GridX")
+	local z = tile:GetAttribute("GridZ")
+	if typeof(x) ~= "number" or typeof(z) ~= "number" then
+		return nil
+	end
+
+	local unitsFolder = getUnitsFolder()
+	if not unitsFolder then
+		return nil
+	end
+
+	for _, unit in unitsFolder:GetChildren() do
+		if unit:IsA("Model")
+			and unit:GetAttribute("OwnerUserId") ~= localPlayer.UserId
+			and unit:GetAttribute("GridX") == x
+			and unit:GetAttribute("GridZ") == z then
+			return unit
+		end
+	end
+
+	return nil
+end
+
+local function findEnemyCityAtTile(tile: BasePart): Model?
+	local x = tile:GetAttribute("GridX")
+	local z = tile:GetAttribute("GridZ")
+	if typeof(x) ~= "number" or typeof(z) ~= "number" then
+		return nil
+	end
+
+	local citiesFolder = getCitiesFolder()
+	if not citiesFolder then
+		return nil
+	end
+
+	for _, city in citiesFolder:GetChildren() do
+		if city:IsA("Model")
+			and city:GetAttribute("OwnerUserId") ~= localPlayer.UserId
+			and city:GetAttribute("GridX") == x
+			and city:GetAttribute("GridZ") == z then
+			return city
+		end
+	end
+
+	return nil
 end
 
 local function requestMove(tile: BasePart)
@@ -2725,7 +2897,7 @@ local function requestMove(tile: BasePart)
 end
 
 local function requestAttack(targetModel: Model)
-	if not selectedUnitId or not attackMode then
+	if not selectedUnitId or not selectedUnitModel or not isTargetInAttackRange(selectedUnitModel, targetModel) then
 		return
 	end
 
@@ -2739,7 +2911,7 @@ local function requestAttack(targetModel: Model)
 end
 
 local function requestAttackCity(targetCity: Model)
-	if not selectedUnitId or not attackMode then
+	if not selectedUnitId or not selectedUnitModel or not isTargetInAttackRange(selectedUnitModel, targetCity) then
 		return
 	end
 
@@ -2782,7 +2954,7 @@ mouse.Button1Down:Connect(function()
 			else
 				selectUnit(unitModel)
 			end
-		elseif attackMode then
+		elseif selectedUnitId and selectedUnitModel and isTargetInAttackRange(selectedUnitModel, unitModel) then
 			requestAttack(unitModel)
 		end
 		return
@@ -2790,7 +2962,7 @@ mouse.Button1Down:Connect(function()
 
 	local cityModel = findCityModel(target)
 	if cityModel then
-		if attackMode and cityModel:GetAttribute("OwnerUserId") ~= localPlayer.UserId then
+		if selectedUnitId and selectedUnitModel and cityModel:GetAttribute("OwnerUserId") ~= localPlayer.UserId and isTargetInAttackRange(selectedUnitModel, cityModel) then
 			requestAttackCity(cityModel)
 			return
 		end
@@ -2808,6 +2980,18 @@ mouse.Button1Down:Connect(function()
 
 	local tile = findTile(target)
 	if tile then
+		local enemyUnit = findEnemyUnitAtTile(tile)
+		if enemyUnit and selectedUnitId and selectedUnitModel and isTargetInAttackRange(selectedUnitModel, enemyUnit) then
+			requestAttack(enemyUnit)
+			return
+		end
+
+		local enemyCity = findEnemyCityAtTile(tile)
+		if enemyCity and selectedUnitId and selectedUnitModel and isTargetInAttackRange(selectedUnitModel, enemyCity) then
+			requestAttackCity(enemyCity)
+			return
+		end
+
 		if movementMode then
 			requestMove(tile)
 		end
@@ -2840,11 +3024,21 @@ for _, attributeName in {
 	"TreasuryScience",
 	"TreasuryCulture",
 	"TreasuryGold",
+	"TreasuryIron",
+	"TreasuryHorses",
 	"TreasuryFaith",
 	"TreasuryFood",
 	"TreasuryProduction",
 } do
 	localPlayer:GetAttributeChangedSignal(attributeName):Connect(updateGameHudResources)
+end
+
+for _, attributeName in {
+	"CurrentResearchName",
+	"ResearchSecondsLeft",
+	"LastResearchMessage",
+} do
+	localPlayer:GetAttributeChangedSignal(attributeName):Connect(updateTechnologyStatus)
 end
 
 warNotificationEvent.OnClientEvent:Connect(showWarNotification)

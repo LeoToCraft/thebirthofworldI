@@ -27,6 +27,7 @@ local BOT_PRODUCTION_SECONDS = 2
 local BOT_UNIT_PRODUCTION_SECONDS = 5
 local BOT_MAX_UNITS_PER_OWNER = 10
 local BOT_MAX_BUILDERS_PER_OWNER = 2
+local BOT_ACTIVE_COUNT = 4
 
 local unitsById = {}
 local occupiedTiles = {}
@@ -182,6 +183,7 @@ local function setUnitAttributes(instance: Instance, unitId: string, player: any
 	instance:SetAttribute("IsMoving", false)
 	instance:SetAttribute("Fortified", false)
 	instance:SetAttribute("FortifyUntilHealed", false)
+	instance:SetAttribute("AutoAttack", false)
 	instance:SetAttribute("AttachedToUnitId", nil)
 	instance:SetAttribute("ActionState", "Ready")
 
@@ -879,11 +881,15 @@ local function buildResourceImprovement(unitId: string, unitState)
 	tile:SetAttribute("FoodYield", (tile:GetAttribute("FoodYield") or 0) + 1)
 	tile:SetAttribute("ProductionYield", (tile:GetAttribute("ProductionYield") or 0) + 1)
 	CityService.RefreshYieldsNear(unitState.OwnerUserId, unitState.GridX, unitState.GridZ)
+	local strategicIron = resourceType == "Iron" and (tile:GetAttribute("StrategicYield") or 0) or 0
+	local strategicHorses = resourceType == "Horses" and (tile:GetAttribute("StrategicYield") or 0) or 0
 	CityService.AddTreasury(
 		unitState.OwnerUserId,
 		scaleTreasuryYield(tile:GetAttribute("FoodYield") or 0),
 		scaleTreasuryYield(tile:GetAttribute("ProductionYield") or 0),
-		scaleTreasuryYield(tile:GetAttribute("GoldYield") or 0)
+		scaleTreasuryYield(tile:GetAttribute("GoldYield") or 0),
+		scaleTreasuryYield(strategicIron),
+		scaleTreasuryYield(strategicHorses)
 	)
 
 	if not createImprovementVisual(tile, resourceType) then
@@ -1257,6 +1263,10 @@ local function onUnitAction(player: Player, unitId: string, actionId: string, ac
 		if typeof(actionValue) == "string" then
 			attackCity(unitState, actionValue)
 		end
+	elseif actionId == "AutoAttack" then
+		local enabled = unitState.Model:GetAttribute("AutoAttack") ~= true
+		unitState.Model:SetAttribute("AutoAttack", enabled)
+		setUnitActionState(unitState, enabled and "AutoAttack" or "Ready", false, false)
 	elseif actionId == "AttachTo" then
 		if typeof(actionValue) ~= "string" or actionValue == unitId then
 			return
@@ -1325,6 +1335,10 @@ local function spawnBotUnits()
 	}
 
 	for index, bot in botOwners do
+		if index > BOT_ACTIVE_COUNT then
+			break
+		end
+
 		local point = spawnPoints[index]
 		local settlerX, settlerZ = findSpawnTile("Settler", point.X, point.Z, bot.UserId)
 		if settlerX and settlerZ then
@@ -1391,6 +1405,30 @@ local function startBotProductionLoop()
 					local unitType = chooseBotProducedUnit(random, cityState.OwnerUserId)
 					if unitType then
 						startCityProduction(botOwner, cityId, unitType)
+					end
+				end
+			end
+		end
+	end
+end
+
+local function startAutoAttackLoop()
+	while true do
+		task.wait(BOT_ACTION_SECONDS)
+
+		for unitId, unitState in unitsById do
+			if unitState.Model
+				and unitState.Model:GetAttribute("AutoAttack") == true
+				and not unitState.IsMoving
+				and UnitConfig.Types[unitState.UnitType]
+				and UnitConfig.Types[unitState.UnitType].Attack > 0 then
+				local targetUnitId, targetState = findBotAttackTarget(unitState)
+				if targetUnitId and targetState then
+					attackUnit(unitId, unitState, targetUnitId, targetState)
+				else
+					local targetCityId = findBotCityTarget(unitState)
+					if targetCityId then
+						attackCity(unitState, targetCityId)
 					end
 				end
 			end
@@ -1485,6 +1523,7 @@ function UnitService.Start()
 	spawnBotUnits()
 	task.spawn(moveBotUnits)
 	task.spawn(startBotProductionLoop)
+	task.spawn(startAutoAttackLoop)
 end
 
 return UnitService
