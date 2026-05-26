@@ -16,6 +16,7 @@ local REMOTES_FOLDER_NAME = "Remotes"
 local CREATE_COUNTRY_EVENT_NAME = "CreateCountry"
 local DIPLOMACY_ACTION_EVENT_NAME = "DiplomacyAction"
 local DELETE_CITY_EVENT_NAME = "DeleteCity"
+local WAR_NOTIFICATION_EVENT_NAME = "WarNotification"
 local COUNTRY_NAME_ATTRIBUTE = "CountryName"
 local CITY_HEALTH_BAR_NAME = "CityHealthBar"
 
@@ -116,6 +117,26 @@ local function getOrCreateDeleteCityEvent(): RemoteEvent
 	newDeleteCityEvent.Parent = remotesFolder
 
 	return newDeleteCityEvent
+end
+
+local function getOrCreateWarNotificationEvent(): RemoteEvent
+	local remotesFolder = ReplicatedStorage:FindFirstChild(REMOTES_FOLDER_NAME)
+	if not remotesFolder then
+		remotesFolder = Instance.new("Folder")
+		remotesFolder.Name = REMOTES_FOLDER_NAME
+		remotesFolder.Parent = ReplicatedStorage
+	end
+
+	local warNotificationEvent = remotesFolder:FindFirstChild(WAR_NOTIFICATION_EVENT_NAME)
+	if warNotificationEvent and warNotificationEvent:IsA("RemoteEvent") then
+		return warNotificationEvent
+	end
+
+	local newWarNotificationEvent = Instance.new("RemoteEvent")
+	newWarNotificationEvent.Name = WAR_NOTIFICATION_EVENT_NAME
+	newWarNotificationEvent.Parent = remotesFolder
+
+	return newWarNotificationEvent
 end
 
 local function getTile(x: number, z: number): BasePart?
@@ -538,12 +559,28 @@ local function addCityTerritoryToSet(territoryTiles: { [string]: { X: number, Z:
 	end
 end
 
+local function addCityBorderToSet(borderTiles: { [string]: { X: number, Z: number } }, centerX: number, centerZ: number)
+	local radius = CityConfig.Territory.BorderRadius or CityConfig.Territory.Radius
+
+	for x = centerX - radius, centerX + radius do
+		for z = centerZ - radius, centerZ + radius do
+			if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length then
+				borderTiles[getTerritoryKey(x, z)] = { X = x, Z = z }
+			end
+		end
+	end
+end
+
 local function isTerritoryEdge(territoryTiles: { [string]: { X: number, Z: number } }, x: number, z: number): boolean
 	local directions = {
 		{ X = 1, Z = 0 },
 		{ X = -1, Z = 0 },
 		{ X = 0, Z = 1 },
 		{ X = 0, Z = -1 },
+		{ X = 1, Z = 1 },
+		{ X = 1, Z = -1 },
+		{ X = -1, Z = 1 },
+		{ X = -1, Z = -1 },
 	}
 
 	for _, direction in directions do
@@ -569,18 +606,21 @@ local function rebuildOwnerTerritory(ownerUserId: number)
 	folder.Parent = parent
 
 	local territoryTiles = {}
+	local borderTiles = {}
 	for _, cityState in citiesById do
 		if cityState.OwnerUserId == ownerUserId then
 			addCityTerritoryToSet(territoryTiles, cityState.GridX, cityState.GridZ)
+			addCityBorderToSet(borderTiles, cityState.GridX, cityState.GridZ)
 		end
 	end
 
 	local color = getCountryColor(ownerUserId)
 
-	for _, position in territoryTiles do
+	for _, position in borderTiles do
 		local tile = getTile(position.X, position.Z)
 		if tile then
-			local isEdge = isTerritoryEdge(territoryTiles, position.X, position.Z)
+			local isOwnedTile = territoryTiles[getTerritoryKey(position.X, position.Z)] ~= nil
+			local isEdge = not isOwnedTile or isTerritoryEdge(borderTiles, position.X, position.Z)
 			local marker = Instance.new("Part")
 			marker.Name = isEdge and "Border" or "Territory"
 			marker.Anchored = true
@@ -588,7 +628,8 @@ local function rebuildOwnerTerritory(ownerUserId: number)
 			marker.CanQuery = false
 			marker.Color = color
 			marker.Material = Enum.Material.SmoothPlastic
-			marker.Size = Vector3.new(MapConfig.Tile.Width * 0.96, isEdge and 0.07 or 0.04, MapConfig.Tile.Length * 0.96)
+			local markerScale = isEdge and 1.03 or 0.98
+			marker.Size = Vector3.new(MapConfig.Tile.Width * markerScale, isEdge and 0.08 or 0.04, MapConfig.Tile.Length * markerScale)
 			marker.Transparency = isEdge and CityConfig.Territory.BorderTransparency or CityConfig.Territory.FillTransparency
 			marker.Position = Vector3.new(tile.Position.X, tile.Position.Y + tile.Size.Y / 2 + 0.11, tile.Position.Z)
 			marker:SetAttribute("OwnerUserId", ownerUserId)
@@ -623,12 +664,42 @@ local function getRelation(firstUserId: number, secondUserId: number): string
 	return diplomacyByPair[getPairKey(firstUserId, secondUserId)] or "Peace"
 end
 
-local function setRelation(firstUserId: number, secondUserId: number, relation: string)
+local function getOwnerDisplayName(ownerUserId: number): string
+	local player = Players:GetPlayerByUserId(ownerUserId)
+	if player then
+		return sanitizeName(player:GetAttribute(COUNTRY_NAME_ATTRIBUTE), player.Name, 32)
+	end
+
+	for _, cityState in citiesById do
+		if cityState.OwnerUserId == ownerUserId then
+			return sanitizeName(cityState.CountryName, "Неизвестная держава", 32)
+		end
+	end
+
+	return ownerUserId < 0 and "Бот" or "Игрок"
+end
+
+local function notifyWarDeclared(attackerUserId: number, defenderUserId: number, reason: string)
+	local defender = Players:GetPlayerByUserId(defenderUserId)
+	if not defender then
+		return
+	end
+
+	getOrCreateWarNotificationEvent():FireClient(defender, {
+		From = getOwnerDisplayName(attackerUserId),
+		To = getOwnerDisplayName(defenderUserId),
+		Reason = reason,
+	})
+end
+
+local function setRelation(firstUserId: number, secondUserId: number, relation: string, reason: string?)
 	if firstUserId == secondUserId then
 		return
 	end
 
-	diplomacyByPair[getPairKey(firstUserId, secondUserId)] = relation
+	local pairKey = getPairKey(firstUserId, secondUserId)
+	local previousRelation = diplomacyByPair[pairKey] or "Peace"
+	diplomacyByPair[pairKey] = relation
 
 	for _, player in Players:GetPlayers() do
 		if player.UserId == firstUserId then
@@ -636,6 +707,10 @@ local function setRelation(firstUserId: number, secondUserId: number, relation: 
 		elseif player.UserId == secondUserId then
 			player:SetAttribute(getRelationAttributeName(firstUserId), relation)
 		end
+	end
+
+	if relation == "War" and previousRelation ~= "War" then
+		notifyWarDeclared(firstUserId, secondUserId, reason or "Причина не указана")
 	end
 end
 
@@ -691,6 +766,14 @@ local function addTreasury(ownerUserId: number, food: number, production: number
 	end
 end
 
+local function scaleYield(value: number): number
+	if value <= 0 then
+		return 0
+	end
+
+	return math.max(1, math.floor(value * (CityConfig.Economy.YieldMultiplier or 1) + 0.5))
+end
+
 local function calculateCityYields(centerX: number, centerZ: number): (number, number, number)
 	local food = 0
 	local production = 0
@@ -743,7 +826,12 @@ local function startEconomyLoop()
 
 			for cityId, cityState in citiesById do
 				refreshCityYields(cityId)
-				addTreasury(cityState.OwnerUserId, cityState.FoodPerTurn or 0, cityState.ProductionPerTurn or 0, cityState.GoldPerTurn or 0)
+				addTreasury(
+					cityState.OwnerUserId,
+					scaleYield(cityState.FoodPerTurn or 0),
+					scaleYield(cityState.ProductionPerTurn or 0),
+					scaleYield(cityState.GoldPerTurn or 0)
+				)
 			end
 		end
 	end)
@@ -764,7 +852,7 @@ local function onDiplomacyAction(player: Player, targetOwnerUserId: number, acti
 	end
 
 	if actionId == "DeclareWar" then
-		setRelation(player.UserId, targetOwnerUserId, "War")
+		setRelation(player.UserId, targetOwnerUserId, "War", "Дипломатическое объявление войны")
 		player:SetAttribute("LastDiplomacyMessage", "Война объявлена")
 	elseif actionId == "MakePeace" then
 		setRelation(player.UserId, targetOwnerUserId, "Peace")
@@ -898,7 +986,7 @@ function CityService.DamageCity(attackerOwnerUserId: number, cityId: string, amo
 	end
 
 	if not CityService.AreAtWar(attackerOwnerUserId, cityState.OwnerUserId) then
-		CityService.SetWar(attackerOwnerUserId, cityState.OwnerUserId, true)
+		CityService.SetWar(attackerOwnerUserId, cityState.OwnerUserId, true, "Военное нападение")
 	end
 
 	local nextHealth = math.max(0, (cityState.Health or CityConfig.Starting.Health) - amount)
@@ -934,7 +1022,7 @@ end
 function CityService.RefreshYieldsNear(ownerUserId: number, x: number, z: number)
 	for cityId, cityState in citiesById do
 		if cityState.OwnerUserId == ownerUserId then
-			local distance = math.abs(x - cityState.GridX) + math.abs(z - cityState.GridZ)
+			local distance = math.max(math.abs(x - cityState.GridX), math.abs(z - cityState.GridZ))
 			if distance <= CityConfig.Territory.Radius then
 				refreshCityYields(cityId)
 			end
@@ -950,13 +1038,39 @@ function CityService.AreAtWar(firstUserId: number, secondUserId: number): boolea
 	return getRelation(firstUserId, secondUserId) == "War"
 end
 
-function CityService.SetWar(firstUserId: number, secondUserId: number, atWar: boolean)
-	setRelation(firstUserId, secondUserId, atWar and "War" or "Peace")
+function CityService.GetTerritoryOwnerAt(x: number, z: number): number?
+	local radius = CityConfig.Territory.Radius
+	local bestOwnerUserId = nil
+	local bestDistance = math.huge
+
+	for _, cityState in citiesById do
+		local distance = math.max(math.abs(x - cityState.GridX), math.abs(z - cityState.GridZ))
+		if distance <= radius and distance < bestDistance then
+			bestOwnerUserId = cityState.OwnerUserId
+			bestDistance = distance
+		end
+	end
+
+	return bestOwnerUserId
+end
+
+function CityService.CanOwnerEnterTile(ownerUserId: number, x: number, z: number): boolean
+	local territoryOwnerUserId = CityService.GetTerritoryOwnerAt(x, z)
+	if not territoryOwnerUserId or territoryOwnerUserId == ownerUserId then
+		return true
+	end
+
+	return CityService.AreAtWar(ownerUserId, territoryOwnerUserId)
+end
+
+function CityService.SetWar(firstUserId: number, secondUserId: number, atWar: boolean, reason: string?)
+	setRelation(firstUserId, secondUserId, atWar and "War" or "Peace", reason)
 end
 
 function CityService.Start()
 	getCitiesFolder()
 	getTerritoryFolder()
+	getOrCreateWarNotificationEvent()
 	getOrCreateCreateCountryEvent().OnServerEvent:Connect(onCreateCountry)
 	getOrCreateDiplomacyActionEvent().OnServerEvent:Connect(onDiplomacyAction)
 	getOrCreateDeleteCityEvent().OnServerEvent:Connect(onDeleteCity)

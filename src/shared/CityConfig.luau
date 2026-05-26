@@ -8,7 +8,8 @@ CityConfig.Starting = {
 }
 
 CityConfig.Economy = {
-	TickSeconds = 6,
+	TickSeconds = 4,
+	YieldMultiplier = 0.5,
 	UnitProductionSeconds = 15,
 	TradeGold = 5,
 }
@@ -23,9 +24,10 @@ CityConfig.Placement = {
 }
 
 CityConfig.Territory = {
-	Radius = 4,
-	FillTransparency = 0.72,
-	BorderTransparency = 0.5,
+	Radius = 1,
+	BorderRadius = 2,
+	FillTransparency = 0.78,
+	BorderTransparency = 0.42,
 }
 
 CityConfig.Visual = {

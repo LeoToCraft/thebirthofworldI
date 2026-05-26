@@ -37,6 +37,7 @@ UnitConfig.Types = {
 		Health = 60,
 		Attack = 0,
 		Movement = 2,
+		BuildCharges = 2,
 		Color = Color3.fromRGB(83, 169, 226),
 		CanBuild = true,
 		CanEnter = {

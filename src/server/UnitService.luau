@@ -24,7 +24,7 @@ local IMPROVEMENTS_FOLDER_NAME = "Improvements"
 local BOT_ACTION_SECONDS = 1.5
 local AUTO_MOVE_STEP = 2
 local BOT_PRODUCTION_SECONDS = 2
-local BOT_UNIT_PRODUCTION_SECONDS = 7
+local BOT_UNIT_PRODUCTION_SECONDS = 5
 local BOT_MAX_UNITS_PER_OWNER = 10
 local BOT_MAX_BUILDERS_PER_OWNER = 2
 
@@ -40,6 +40,7 @@ local botOwners = {
 	{ UserId = -106, Name = "Норвегия", CountryName = "Северное королевство", CityNamePrefix = "Берген" },
 }
 local setUnitActionState
+local removeUnit
 
 local function getTileName(x: number, z: number): string
 	return string.format("Tile_%03d_%03d", x, z)
@@ -140,20 +141,32 @@ local function getOrCreateCreateUnitEvent(): RemoteEvent
 	return newCreateUnitEvent
 end
 
-local function canUnitEnter(unitType: string, tile: BasePart): boolean
+local function canUnitEnter(unitType: string, tile: BasePart, ownerUserId: number?): boolean
 	local unit = UnitConfig.Types[unitType]
 	local biome = tile:GetAttribute("Biome")
 
-	return typeof(biome) == "string" and unit.CanEnter[biome] == true
+	if typeof(biome) ~= "string" or unit.CanEnter[biome] ~= true then
+		return false
+	end
+
+	if typeof(ownerUserId) == "number" then
+		local x = tile:GetAttribute("GridX")
+		local z = tile:GetAttribute("GridZ")
+		if typeof(x) == "number" and typeof(z) == "number" and not CityService.CanOwnerEnterTile(ownerUserId, x, z) then
+			return false
+		end
+	end
+
+	return true
 end
 
-local function isOpenForUnit(unitType: string, x: number, z: number): boolean
+local function isOpenForUnit(unitType: string, x: number, z: number, ownerUserId: number?): boolean
 	local tile = getTile(x, z)
 	if not tile then
 		return false
 	end
 
-	return canUnitEnter(unitType, tile) and occupiedTiles[getTileKey(x, z)] == nil
+	return canUnitEnter(unitType, tile, ownerUserId) and occupiedTiles[getTileKey(x, z)] == nil
 end
 
 local function setUnitAttributes(instance: Instance, unitId: string, player: any, unitType: string, x: number, z: number)
@@ -171,6 +184,11 @@ local function setUnitAttributes(instance: Instance, unitId: string, player: any
 	instance:SetAttribute("FortifyUntilHealed", false)
 	instance:SetAttribute("AttachedToUnitId", nil)
 	instance:SetAttribute("ActionState", "Ready")
+
+	local buildCharges = UnitConfig.Types[unitType].BuildCharges
+	if typeof(buildCharges) == "number" then
+		instance:SetAttribute("BuildCharges", buildCharges)
+	end
 end
 
 local function applyUnitAttributesToParts(model: Model, unitId: string, player: any, unitType: string, x: number, z: number)
@@ -452,14 +470,14 @@ local function tweenModelToTile(model: Model, tile: BasePart, onComplete: () -> 
 	tween:Play()
 end
 
-local function findSpawnTile(unitType: string, startX: number, startZ: number): (number?, number?)
+local function findSpawnTile(unitType: string, startX: number, startZ: number, ownerUserId: number?): (number?, number?)
 	local maxRadius = math.max(MapConfig.Map.Width, MapConfig.Map.Length)
 
 	for radius = 0, maxRadius do
 		for x = startX - radius, startX + radius do
 			for z = startZ - radius, startZ + radius do
 				if x >= 1 and x <= MapConfig.Map.Width and z >= 1 and z <= MapConfig.Map.Length then
-					if isOpenForUnit(unitType, x, z) then
+					if isOpenForUnit(unitType, x, z, ownerUserId) then
 						return x, z
 					end
 				end
@@ -476,7 +494,7 @@ local function createUnit(player: any, unitType: string, x: number, z: number): 
 	end
 
 	local tile = getTile(x, z)
-	if not tile then
+	if not tile or not canUnitEnter(unitType, tile, player.UserId) or occupiedTiles[getTileKey(x, z)] then
 		return nil
 	end
 
@@ -498,18 +516,19 @@ local function createUnit(player: any, unitType: string, x: number, z: number): 
 		IsMoving = false,
 		MoveToken = 0,
 		AttachedToUnitId = nil,
+		BuildCharges = UnitConfig.Types[unitType].BuildCharges,
 	}
 	occupiedTiles[getTileKey(x, z)] = unitId
 
 	return model
 end
 
-local function findOpenAdjacentTile(unitType: string, x: number, z: number): (number?, number?)
+local function findOpenAdjacentTile(unitType: string, x: number, z: number, ownerUserId: number?): (number?, number?)
 	for radius = 1, 3 do
 		for targetX = x - radius, x + radius do
 			for targetZ = z - radius, z + radius do
 				local distance = math.abs(targetX - x) + math.abs(targetZ - z)
-				if distance <= math.max(radius, 1) and isOpenForUnit(unitType, targetX, targetZ) then
+				if distance <= math.max(radius, 1) and isOpenForUnit(unitType, targetX, targetZ, ownerUserId) then
 					return targetX, targetZ
 				end
 			end
@@ -519,7 +538,7 @@ local function findOpenAdjacentTile(unitType: string, x: number, z: number): (nu
 	return nil, nil
 end
 
-local function findOpenNeighborNear(unitType: string, x: number, z: number): (number?, number?)
+local function findOpenNeighborNear(unitType: string, x: number, z: number, ownerUserId: number?): (number?, number?)
 	local offsets = {
 		{ X = 1, Z = 0 },
 		{ X = -1, Z = 0 },
@@ -534,7 +553,7 @@ local function findOpenNeighborNear(unitType: string, x: number, z: number): (nu
 	for _, offset in offsets do
 		local targetX = x + offset.X
 		local targetZ = z + offset.Z
-		if isOpenForUnit(unitType, targetX, targetZ) then
+		if isOpenForUnit(unitType, targetX, targetZ, ownerUserId) then
 			return targetX, targetZ
 		end
 	end
@@ -542,9 +561,9 @@ local function findOpenNeighborNear(unitType: string, x: number, z: number): (nu
 	return nil, nil
 end
 
-local function buildPath(unitType: string, startX: number, startZ: number, targetX: number, targetZ: number): { { X: number, Z: number } }?
+local function buildPath(unitType: string, startX: number, startZ: number, targetX: number, targetZ: number, ownerUserId: number?): { { X: number, Z: number } }?
 	local targetTile = getTile(targetX, targetZ)
-	if not targetTile or not canUnitEnter(unitType, targetTile) or occupiedTiles[getTileKey(targetX, targetZ)] then
+	if not targetTile or not canUnitEnter(unitType, targetTile, ownerUserId) or occupiedTiles[getTileKey(targetX, targetZ)] then
 		return nil
 	end
 
@@ -585,7 +604,7 @@ local function buildPath(unitType: string, startX: number, startZ: number, targe
 			local nextKey = getTileKey(nextX, nextZ)
 			if not visited[nextKey] then
 				local tile = getTile(nextX, nextZ)
-				if tile and canUnitEnter(unitType, tile) and not occupiedTiles[nextKey] then
+				if tile and canUnitEnter(unitType, tile, ownerUserId) and not occupiedTiles[nextKey] then
 					visited[nextKey] = true
 					cameFrom[nextKey] = currentKey
 					positionsByKey[nextKey] = { X = nextX, Z = nextZ }
@@ -816,8 +835,29 @@ local function createFallbackImprovementMarker(tile: BasePart, resourceType: str
 	return marker
 end
 
-local function buildResourceImprovement(unitState)
+local function scaleTreasuryYield(value: number): number
+	if value <= 0 then
+		return 0
+	end
+
+	return math.max(1, math.floor(value * (CityConfig.Economy.YieldMultiplier or 1) + 0.5))
+end
+
+local function buildResourceImprovement(unitId: string, unitState)
 	if unitState.UnitType ~= "Builder" then
+		return
+	end
+
+	local maxCharges = UnitConfig.Types.Builder.BuildCharges or 2
+	local charges = unitState.BuildCharges
+	if typeof(charges) ~= "number" then
+		charges = unitState.Model:GetAttribute("BuildCharges")
+	end
+	if typeof(charges) ~= "number" then
+		charges = maxCharges
+	end
+	if charges <= 0 then
+		setUnitActionState(unitState, "NoBuildCharges", false, false)
 		return
 	end
 
@@ -841,16 +881,26 @@ local function buildResourceImprovement(unitState)
 	CityService.RefreshYieldsNear(unitState.OwnerUserId, unitState.GridX, unitState.GridZ)
 	CityService.AddTreasury(
 		unitState.OwnerUserId,
-		tile:GetAttribute("FoodYield") or 0,
-		tile:GetAttribute("ProductionYield") or 0,
-		tile:GetAttribute("GoldYield") or 0
+		scaleTreasuryYield(tile:GetAttribute("FoodYield") or 0),
+		scaleTreasuryYield(tile:GetAttribute("ProductionYield") or 0),
+		scaleTreasuryYield(tile:GetAttribute("GoldYield") or 0)
 	)
 
 	if not createImprovementVisual(tile, resourceType) then
 		createFallbackImprovementMarker(tile, resourceType)
 	end
 
-	setUnitActionState(unitState, "BuiltImprovement", false, false)
+	charges -= 1
+	unitState.BuildCharges = charges
+	if unitState.Model then
+		unitState.Model:SetAttribute("BuildCharges", charges)
+	end
+
+	if charges <= 0 then
+		removeUnit(unitId, unitState)
+	else
+		setUnitActionState(unitState, "BuiltImprovement", false, false)
+	end
 end
 
 local function isAllowedProducedUnit(unitType: string): boolean
@@ -900,7 +950,7 @@ local function startCityProduction(owner: any, cityId: string, unitType: string)
 			return
 		end
 
-		local x, z = findOpenAdjacentTile(unitType, currentCityState.GridX, currentCityState.GridZ)
+		local x, z = findOpenAdjacentTile(unitType, currentCityState.GridX, currentCityState.GridZ, currentCityState.OwnerUserId)
 		if x and z then
 			createUnit(owner, unitType, x, z)
 		end
@@ -927,12 +977,12 @@ local function spawnStartingUnits(player: Player)
 	local centerX = math.floor(MapConfig.Map.Width / 2) + (playerOrder - 1) * 5
 	local centerZ = math.floor(MapConfig.Map.Length / 2)
 
-	local settlerX, settlerZ = findSpawnTile("Settler", centerX, centerZ)
+	local settlerX, settlerZ = findSpawnTile("Settler", centerX, centerZ, player.UserId)
 	if settlerX and settlerZ then
 		createUnit(player, "Settler", settlerX, settlerZ)
 	end
 
-	local warriorX, warriorZ = findSpawnTile("Warrior", centerX + 1, centerZ)
+	local warriorX, warriorZ = findSpawnTile("Warrior", centerX + 1, centerZ, player.UserId)
 	if warriorX and warriorZ then
 		createUnit(player, "Warrior", warriorX, warriorZ)
 	end
@@ -950,7 +1000,7 @@ local function removePlayerUnits(player: Player)
 	end
 end
 
-local function removeUnit(unitId: string, unitState)
+function removeUnit(unitId: string, unitState)
 	occupiedTiles[getTileKey(unitState.GridX, unitState.GridZ)] = nil
 
 	if unitState.Model then
@@ -991,7 +1041,7 @@ local function attackUnit(attackerUnitId: string, attackerState, targetUnitId: s
 	end
 
 	if not CityService.AreAtWar(attackerState.OwnerUserId, targetState.OwnerUserId) then
-		CityService.SetWar(attackerState.OwnerUserId, targetState.OwnerUserId, true)
+		CityService.SetWar(attackerState.OwnerUserId, targetState.OwnerUserId, true, "Военное нападение")
 	end
 
 	local damage = attackerConfig.Attack
@@ -1050,7 +1100,7 @@ local moveUnitToTile
 local function moveAttachedFollowers(leaderUnitId: string, leaderState)
 	for followerUnitId, followerState in unitsById do
 		if followerState.AttachedToUnitId == leaderUnitId and not followerState.IsMoving then
-			local targetX, targetZ = findOpenNeighborNear(followerState.UnitType, leaderState.GridX, leaderState.GridZ)
+			local targetX, targetZ = findOpenNeighborNear(followerState.UnitType, leaderState.GridX, leaderState.GridZ, followerState.OwnerUserId)
 			if targetX and targetZ then
 				moveUnitToTile(followerUnitId, followerState, targetX, targetZ, false)
 			end
@@ -1060,7 +1110,7 @@ end
 
 function moveUnitToTile(unitId: string, unitState, targetX: number, targetZ: number, moveFollowers: boolean?): boolean
 	local tile = getTile(targetX, targetZ)
-	if not tile or not canUnitEnter(unitState.UnitType, tile) or occupiedTiles[getTileKey(targetX, targetZ)] then
+	if not tile or not canUnitEnter(unitState.UnitType, tile, unitState.OwnerUserId) or occupiedTiles[getTileKey(targetX, targetZ)] then
 		return false
 	end
 
@@ -1103,7 +1153,7 @@ local function startAutoMove(unitId: string, unitState, targetX: number, targetZ
 				continue
 			end
 
-			local path = buildPath(unitState.UnitType, unitState.GridX, unitState.GridZ, targetX, targetZ)
+			local path = buildPath(unitState.UnitType, unitState.GridX, unitState.GridZ, targetX, targetZ, unitState.OwnerUserId)
 			if not path or #path == 0 then
 				setUnitActionState(unitState, "MoveBlocked", false, false)
 				return
@@ -1143,7 +1193,7 @@ local function onMoveUnit(player: Player, unitId: string, targetX: number, targe
 	end
 
 	local tile = getTile(targetX, targetZ)
-	if not tile or not canUnitEnter(unitState.UnitType, tile) then
+	if not tile or not canUnitEnter(unitState.UnitType, tile, unitState.OwnerUserId) then
 		return
 	end
 
@@ -1193,7 +1243,7 @@ local function onUnitAction(player: Player, unitId: string, actionId: string, ac
 			setUnitActionState(unitState, "FoundCityFailed", false, false)
 		end
 	elseif actionId == "BuildImprovement" then
-		buildResourceImprovement(unitState)
+		buildResourceImprovement(unitId, unitState)
 	elseif actionId == "Attack" then
 		if typeof(actionValue) ~= "string" then
 			return
@@ -1276,12 +1326,12 @@ local function spawnBotUnits()
 
 	for index, bot in botOwners do
 		local point = spawnPoints[index]
-		local settlerX, settlerZ = findSpawnTile("Settler", point.X, point.Z)
+		local settlerX, settlerZ = findSpawnTile("Settler", point.X, point.Z, bot.UserId)
 		if settlerX and settlerZ then
 			createUnit(bot :: any, "Settler", settlerX, settlerZ)
 		end
 
-		local warriorX, warriorZ = findSpawnTile("Warrior", point.X + 2, point.Z)
+		local warriorX, warriorZ = findSpawnTile("Warrior", point.X + 2, point.Z, bot.UserId)
 		if warriorX and warriorZ then
 			createUnit(bot :: any, "Warrior", warriorX, warriorZ)
 		end
@@ -1397,7 +1447,7 @@ local function moveBotUnits()
 				local tile = getTile(targetX, targetZ)
 				local targetKey = getTileKey(targetX, targetZ)
 
-				if tile and canUnitEnter(unitState.UnitType, tile) and not occupiedTiles[targetKey] then
+				if tile and canUnitEnter(unitState.UnitType, tile, unitState.OwnerUserId) and not occupiedTiles[targetKey] then
 					occupiedTiles[getTileKey(unitState.GridX, unitState.GridZ)] = nil
 					occupiedTiles[targetKey] = unitId
 					unitState.GridX = targetX
